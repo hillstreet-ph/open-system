@@ -51,6 +51,12 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
     (profile_home / "config.yaml").write_text(
         yaml.safe_dump(
             {
+                # CI runners cold-start the in-process MCPServer subprocess slowly;
+                # the slash-worker wait_for_mcp_discovery default (1.5s interactive)
+                # can expire before the probe tool is registered, causing a false
+                # negative. Use the single-query-scale bound so discovery completes
+                # before /tools is served. Fast servers still return immediately.
+                "mcp_discovery_timeout": 15,
                 "mcp_servers": {
                     "profileprobe": {
                         "enabled": True,
