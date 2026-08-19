@@ -75,7 +75,17 @@ jobs:
       - id: pick
         run: |
           set -euo pipefail
-          tags="$(scripts/sandbox/pick-release-tags.sh --count '${{ inputs.tag-count || 5 }}')"
+          # Forks (e.g. open-system) may have zero release tags. Emit an empty
+          # matrix and let downstream jobs skip instead of failing the schedule.
+          if ! tags="$(scripts/sandbox/pick-release-tags.sh --count '${{ inputs.tag-count || 5 }}' 2>/tmp/pick-tags.err)"; then
+            if grep -q 'no release tags found' /tmp/pick-tags.err; then
+              echo "No release tags in this repository; skipping install/update E2E matrix."
+              echo 'tags=[]' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            cat /tmp/pick-tags.err >&2
+            exit 1
+          fi
           echo "Testing updates from: $tags"
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
 
