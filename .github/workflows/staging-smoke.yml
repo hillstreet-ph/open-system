@@ -1,0 +1,65 @@
+name: Staging smoke (Open-System)
+
+# Does not deploy to production. Builds/pulls candidate image and runs lightweight checks.
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Image ref (repo:tag or repo@sha256:…)"
+        required: true
+        default: "kairocasino/open-system:latest"
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "docker/**"
+      - ".github/workflows/staging-smoke.yml"
+      - "scripts/healthcheck.sh"
+      - "scripts/status.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.repository == 'hillstreet-ph/open-system'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build local image (PR path)
+        if: github.event_name == 'pull_request'
+        run: docker build -t open-system:smoke .
+      - name: Pull candidate (dispatch path)
+        if: github.event_name == 'workflow_dispatch'
+        run: docker pull "${{ inputs.image }}"
+      - name: Run container smoke
+        run: |
+          set -euo pipefail
+          IMG="${{ github.event_name == 'workflow_dispatch' && inputs.image || 'open-system:smoke' }}"
+          docker run -d --name os-smoke \
+            -e HERMES_HOME=/opt/data \
+            -e HERMES_DASHBOARD=false \
+            -e API_SERVER_ENABLED=true \
+            -e API_SERVER_HOST=0.0.0.0 \
+            -e API_SERVER_PORT=8642 \
+            -e API_SERVER_KEY=staging-smoke-key-32chars-min \
+            -e HERMES_GATEWAY_BOOTSTRAP_STATE=running \
+            -p 8642:8642 \
+            "$IMG"
+          # Give s6 time; do not fail the whole job on slow cold start — report status
+          for i in $(seq 1 36); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:8642/health || true)
+            if [ "$code" = "200" ] || [ "$code" = "401" ] || [ "$code" = "403" ]; then
+              echo "API responded with $code"
+              docker logs os-smoke 2>&1 | tail -40
+              docker rm -f os-smoke
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "API did not become ready in time; dumping logs"
+          docker logs os-smoke 2>&1 | tail -80
+          docker rm -f os-smoke
+          exit 1

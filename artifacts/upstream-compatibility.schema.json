@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["open_system_sha", "upstream_sha", "ops_files_present", "secrets_scanned"],
+  "properties": {
+    "open_system_sha": { "type": "string" },
+    "upstream_sha": { "type": "string" },
+    "ops_files_present": { "type": "boolean" },
+    "entrypoint_changed": { "type": "boolean" },
+    "secrets_scanned": { "type": "boolean" },
+    "notes": { "type": "array", "items": { "type": "string" } }
+  }
+}

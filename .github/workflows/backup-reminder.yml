@@ -1,0 +1,23 @@
+name: Backup reminder (Open-System)
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  remind:
+    if: github.repository == 'hillstreet-ph/open-system'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Backup checklist
+        run: |
+          echo "### Open-System backup checklist" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Run \`scripts/backup/backup-state.sh\` against production volume or host" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Verify with \`scripts/backup/verify-backup.sh\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Copy to offsite (S3) if configured" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Optional: Supabase \`pg_dump\` via project dashboard/API" >> "$GITHUB_STEP_SUMMARY"
+          echo "This workflow does **not** access production volumes or secrets." >> "$GITHUB_STEP_SUMMARY"

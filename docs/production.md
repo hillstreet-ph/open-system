@@ -78,3 +78,18 @@ Zeabur hermes-agent-v2  +  /opt/data volume
 5. Inject secrets (env file / platform secrets)
 6. Start container (do not override ENTRYPOINT)
 7. `scripts/healthcheck.sh` / `scripts/verify-deployment.sh`
+
+## Related Open-System ops docs
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md)
+- [DEPLOYMENT.md](./DEPLOYMENT.md)
+- [ZEABUR.md](./ZEABUR.md)
+- [PERSISTENCE.md](./PERSISTENCE.md)
+- [BACKUP.md](./BACKUP.md)
+- [DISASTER-RECOVERY.md](./DISASTER-RECOVERY.md)
+- [UPSTREAM-SYNC.md](./UPSTREAM-SYNC.md)
+- [ENVIRONMENT.md](./ENVIRONMENT.md)
+- [TELEGRAM.md](./TELEGRAM.md)
+- [SUPABASE.md](./SUPABASE.md)
+- [SECURITY.md](./SECURITY.md)
+- [RUNBOOK.md](./RUNBOOK.md)
