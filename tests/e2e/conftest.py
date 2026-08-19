@@ -146,7 +146,7 @@ def make_session_entry(platform: Platform, source: SessionSource = None) -> Sess
         created_at=datetime.now(),
         updated_at=datetime.now(),
         platform=platform,
-        chat_type="dm",
+        chat_type=getattr(source, "chat_type", None) or "dm",
     )
 
 
@@ -279,7 +279,9 @@ async def send_and_capture(adapter, text: str, platform: Platform, **event_kwarg
     event = make_event(platform, text, **event_kwargs)
     adapter.send.reset_mock()
     await adapter.handle_message(event)
-    for _ in range(40):  # up to ~2s; returns as soon as the send lands
+    # Up to ~5s: agent/group paths can exceed 2s on CI under SQLite journal
+    # fallback and worker-thread hops (flaked on telegram group plaintext).
+    for _ in range(100):
         if adapter.send.called:
             break
         await asyncio.sleep(0.05)
