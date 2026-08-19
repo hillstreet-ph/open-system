@@ -3,12 +3,11 @@ name: Open-System Docker Release
 # Publishes immutable images for hillstreet-ph/open-system to Docker Hub.
 # Upstream docker.yml is gated to NousResearch/hermes-agent only.
 #
-# Required repository secrets (already configured):
+# Required repository secrets:
 #   DOCKERHUB_USERNAME
 #   DOCKERHUB_TOKEN
-#
 # Optional repository variable:
-#   DOCKERHUB_IMAGE  (default: ${DOCKERHUB_USERNAME}/open-system)
+#   DOCKERHUB_IMAGE  (default: <DOCKERHUB_USERNAME>/open-system)
 
 on:
   push:
@@ -27,20 +26,33 @@ permissions:
   contents: read
 
 concurrency:
-  group: open-system-docker-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
-
-env:
-  IMAGE_NAME: ${{ vars.DOCKERHUB_IMAGE || format('{0}/open-system', secrets.DOCKERHUB_USERNAME) }}
+  group: open-system-docker-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-and-push:
     if: github.repository == 'hillstreet-ph/open-system'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve image name
+        id: image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+        run: |
+          set -euo pipefail
+          if [ -n "${DOCKERHUB_IMAGE:-}" ]; then
+            echo "name=${DOCKERHUB_IMAGE}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${DOCKERHUB_USERNAME:-}" ]; then
+            echo "name=${DOCKERHUB_USERNAME}/open-system" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Set repository secret DOCKERHUB_USERNAME or variable DOCKERHUB_IMAGE"
+            exit 1
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -58,7 +70,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-,format=short
@@ -91,7 +103,7 @@ jobs:
         run: |
           echo "### Open-System image published" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Image:** \`${{ env.IMAGE_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image:** \`${{ steps.image.outputs.name }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **SHA:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Digest:** \`${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tags:**" >> "$GITHUB_STEP_SUMMARY"
@@ -100,4 +112,4 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Prefer digest for production cutover:" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
