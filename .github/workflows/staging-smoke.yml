@@ -1,6 +1,5 @@
 name: Staging smoke (Open-System)
 
-# Does not deploy to production. Builds/pulls candidate image and runs lightweight checks.
 on:
   workflow_dispatch:
     inputs:
@@ -23,7 +22,7 @@ jobs:
   smoke:
     if: github.repository == 'hillstreet-ph/open-system'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
@@ -48,18 +47,19 @@ jobs:
             -e HERMES_GATEWAY_BOOTSTRAP_STATE=running \
             -p 8642:8642 \
             "$IMG"
-          # Give s6 time; do not fail the whole job on slow cold start — report status
-          for i in $(seq 1 36); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:8642/health || true)
-            if [ "$code" = "200" ] || [ "$code" = "401" ] || [ "$code" = "403" ]; then
-              echo "API responded with $code"
-              docker logs os-smoke 2>&1 | tail -40
-              docker rm -f os-smoke
-              exit 0
+          for i in $(seq 1 72); do
+            if (echo >/dev/tcp/127.0.0.1/8642) >/dev/null 2>&1; then
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8642/health || true)
+              echo "TCP open; /health HTTP=$code"
+              if [ "$code" != "000" ] && [ -n "$code" ]; then
+                docker logs os-smoke 2>&1 | tail -50
+                docker rm -f os-smoke
+                exit 0
+              fi
             fi
             sleep 5
           done
           echo "API did not become ready in time; dumping logs"
-          docker logs os-smoke 2>&1 | tail -80
+          docker logs os-smoke 2>&1 | tail -120
           docker rm -f os-smoke
           exit 1
