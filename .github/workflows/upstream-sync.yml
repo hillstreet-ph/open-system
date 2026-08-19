@@ -1,0 +1,130 @@
+name: Upstream Sync (Hermes)
+
+# Detects new commits/tags on NousResearch/hermes-agent and opens a PR.
+# NEVER merges automatically into main. Human review required.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Upstream ref to sync (branch or tag, default main)"
+        required: false
+        default: "main"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'hillstreet-ph/open-system'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout open-system
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "open-system-upstream-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git || true
+          git fetch upstream --tags --prune
+
+      - name: Resolve upstream ref
+        id: ref
+        run: |
+          REF="${{ github.event.inputs.ref || 'main' }}"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          UPSTREAM_SHA=$(git rev-parse "upstream/$REF")
+          echo "sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          echo "short=$(echo $UPSTREAM_SHA | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Check if already up to date
+        id: status
+        run: |
+          UPSTREAM=${{ steps.ref.outputs.sha }}
+          if git merge-base --is-ancestor "$UPSTREAM" HEAD; then
+            echo "behind=false" >> "$GITHUB_OUTPUT"
+            echo "Open-System already contains upstream ${{ steps.ref.outputs.ref }}@$UPSTREAM"
+          else
+            echo "behind=true" >> "$GITHUB_OUTPUT"
+            AHEAD=$(git rev-list --count HEAD.."$UPSTREAM" || echo "?")
+            echo "commits_behind=$AHEAD" >> "$GITHUB_OUTPUT"
+            echo "Open-System is $AHEAD commit(s) behind upstream"
+          fi
+
+      - name: Create sync branch and merge
+        if: steps.status.outputs.behind == 'true'
+        id: branch
+        run: |
+          BRANCH="upstream-sync/${{ steps.ref.outputs.ref }}-${{ steps.ref.outputs.short }}"
+          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -B "$BRANCH"
+          if git merge --no-ff "upstream/${{ steps.ref.outputs.ref }}" -m "chore(upstream): sync NousResearch/hermes-agent ${{ steps.ref.outputs.ref }}@${{ steps.ref.outputs.short }}"; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            git merge --abort || true
+            git reset --hard "upstream/${{ steps.ref.outputs.ref }}"
+          fi
+          git push -u origin "$BRANCH" --force-with-lease
+
+      - name: Open pull request
+        if: steps.status.outputs.behind == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ steps.branch.outputs.name }}"
+          CONFLICT="${{ steps.branch.outputs.conflict }}"
+          BODY=$(cat <<EOF
+          ## Upstream sync from NousResearch/hermes-agent
+
+          | Field | Value |
+          |-------|-------|
+          | Upstream ref | \`${{ steps.ref.outputs.ref }}\` |
+          | Upstream SHA | \`${{ steps.ref.outputs.sha }}\` |
+          | Commits behind | ${{ steps.status.outputs.commits_behind }} |
+          | Auto-merge conflict | **${CONFLICT}** |
+
+          ### Review checklist
+          - [ ] CI green on this branch
+          - [ ] No secret leakage in diff
+          - [ ] Dockerfile ENTRYPOINT/CMD unchanged unless intentional
+          - [ ] /opt/data volume contract preserved
+          - [ ] Open-System deploy/scripts still valid
+          - [ ] Prefer stable release tags over bleeding-edge main when promoting to production
+
+          **This workflow never merges to main.** Approve and merge only after review.
+
+          Upstream: https://github.com/NousResearch/hermes-agent/commits/${{ steps.ref.outputs.ref }}
+          EOF
+          )
+          EXISTING=$(gh pr list --head "$BRANCH" --json number --jq 'length')
+          if [ "$EXISTING" != "0" ]; then
+            echo "PR already exists for $BRANCH"
+          else
+            gh pr create \
+              --title "chore(upstream): sync hermes-agent ${{ steps.ref.outputs.ref }}@${{ steps.ref.outputs.short }}" \
+              --body "$BODY" \
+              --base main \
+              --head "$BRANCH" || true
+          fi
+
+      - name: Summary
+        run: |
+          echo "### Upstream sync" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Behind: ${{ steps.status.outputs.behind }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Upstream: ${{ steps.ref.outputs.ref }}@${{ steps.ref.outputs.short }}" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,103 @@
+name: Open-System Docker Release
+
+# Publishes immutable images for hillstreet-ph/open-system to Docker Hub.
+# Upstream docker.yml is gated to NousResearch/hermes-agent only.
+#
+# Required repository secrets (already configured):
+#   DOCKERHUB_USERNAME
+#   DOCKERHUB_TOKEN
+#
+# Optional repository variable:
+#   DOCKERHUB_IMAGE  (default: ${DOCKERHUB_USERNAME}/open-system)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      promote_stable:
+        description: "Also tag this build as :stable"
+        required: false
+        default: "false"
+        type: boolean
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-system-docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
+
+env:
+  IMAGE_NAME: ${{ vars.DOCKERHUB_IMAGE || format('{0}/open-system', secrets.DOCKERHUB_USERNAME) }}
+
+jobs:
+  build-and-push:
+    if: github.repository == 'hillstreet-ph/open-system'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+            type=ref,event=tag
+            type=raw,value=stable,enable=${{ github.event_name == 'workflow_dispatch' && inputs.promote_stable == true }}
+            type=raw,value=hermes-main,enable={{is_default_branch}}
+
+      - name: Build and push multi-arch
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=open-system
+            org.opencontainers.image.description=Open-System / Hermes Agent production image
+            org.opencontainers.image.source=https://github.com/hillstreet-ph/open-system
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.vendor=hillstreet-ph
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=open-system-docker
+          cache-to: type=gha,mode=max,scope=open-system-docker
+          provenance: false
+
+      - name: Output digests
+        run: |
+          echo "### Open-System image published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image:** \`${{ env.IMAGE_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **SHA:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Digest:** \`${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tags:**" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Prefer digest for production cutover:" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
