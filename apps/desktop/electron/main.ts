@@ -188,6 +188,7 @@ import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import {
   oauthGuardMayHardFail,
   oauthSessionIsLive,
+  resolveGatedDownloadAuth,
   resolveJsonBody,
   resolveOauthRestAuth,
   resolveReadinessProbeAuth
@@ -255,6 +256,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
@@ -4858,7 +4860,8 @@ function fetchJson(url, token, options: any = {}) {
 // Token-auth download that streams the response body straight to a
 // user-selected destination (via finalizeGatewayDownload) instead of buffering
 // the whole file in memory. The connect timeout is cleared once headers arrive
-// so a slow save dialog or a large stream doesn't trip it.
+// so a slow save dialog or a large stream doesn't trip it. `options.bearer`
+// switches the header to Authorization (RFC 8252 native flow), matching fetchJson.
 function downloadViaTokenToFile(url, token, ctx, options: any = {}) {
   return new Promise((resolve, reject) => {
     let parsed
@@ -4884,9 +4887,7 @@ function downloadViaTokenToFile(url, token, ctx, options: any = {}) {
       parsed,
       {
         method: 'GET',
-        headers: {
-          'X-Hermes-Session-Token': token
-        }
+        headers: options.bearer ? { Authorization: `Bearer ${options.bearer}` } : { 'X-Hermes-Session-Token': token }
       },
       res => {
         // Headers arrived — the connection phase is done. Drop the idle timeout
@@ -7250,6 +7251,13 @@ function readGatewayErrorText(res): Promise<string> {
   })
 }
 
+async function gatedFileAuth(connection) {
+  const nativeAt =
+    connection.authMode === 'oauth' ? await ensureNativeAccessToken(connection.baseUrl).catch(() => null) : null
+
+  return resolveGatedDownloadAuth(connection.authMode, nativeAt, connection.token)
+}
+
 async function saveGatewayFile(payload: any = {}) {
   const filePath = gatewayFilePath(payload.path)
 
@@ -7272,9 +7280,17 @@ async function saveGatewayFile(payload: any = {}) {
   const url = `${connection.baseUrl}${requestPath}`
 
   try {
-    return await (connection.authMode === 'oauth'
-      ? downloadViaOauthSessionToFile(url, ctx)
-      : downloadViaTokenToFile(url, connection.token, ctx))
+    const auth = await gatedFileAuth(connection)
+
+    if (auth.kind === 'bearer') {
+      return await downloadViaTokenToFile(url, auth.token, ctx, { bearer: auth.token })
+    }
+
+    if (auth.kind === 'cookie') {
+      return await downloadViaOauthSessionToFile(url, ctx)
+    }
+
+    return await downloadViaTokenToFile(url, auth.token, ctx)
   } catch (error) {
     // Desktop and the remote gateway update independently. A gateway predating
     // /api/fs/download 404s here; fall back (ONLY on 404) to the older capped
@@ -7299,10 +7315,16 @@ async function saveGatewayFileViaDataUrl(connection, profile, filePath, ctx: any
   )
 
   const url = `${connection.baseUrl}${requestPath}`
+  const auth = await gatedFileAuth(connection)
+  let json: any
 
-  const json = (
-    connection.authMode === 'oauth' ? await fetchJsonViaOauthSession(url) : await fetchJson(url, connection.token)
-  ) as any
+  if (auth.kind === 'bearer') {
+    json = await fetchJson(url, null, { bearer: auth.token })
+  } else if (auth.kind === 'cookie') {
+    json = await fetchJsonViaOauthSession(url)
+  } else {
+    json = await fetchJson(url, auth.token)
+  }
 
   const dataUrl = json?.dataUrl
 
@@ -10849,8 +10871,10 @@ function createSessionWindow(sessionId, { watch = false } = {}) {
 // Additional full "instance" windows — peers of the primary that render the
 // COMPLETE app (sidebar, routing, its own draft) against the shared backend, so
 // a user can run multiple GUI windows at once (⌘⇧N / the "New Window" palette
-// command). Unlike the compact session windows they carry no `?win` flag. The
-// primary mainWindow stays the notification / deep-link / pet-overlay anchor and
+// command). Unlike the compact session windows they carry no `?win` flag; a
+// separate `peer=1` marker prevents them from replaying app-launch source
+// restoration after joining that shared backend. The primary mainWindow stays
+// the notification / deep-link / pet-overlay anchor and
 // is NOT tracked here. The set holds a strong reference so an open peer isn't
 // garbage-collected, and drops it on close.
 const instanceWindows = new Set<any>()
@@ -10930,7 +10954,14 @@ function createInstanceWindow() {
   })
 
   attachRendererConsoleCapture(win, 'instance', rememberLog)
-  loadWindowUrl(win, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Instance window')
+  loadWindowUrl(
+    win,
+    buildInstanceWindowUrl({
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+    }),
+    'Instance window'
+  )
 
   return win
 }
@@ -12136,8 +12167,11 @@ registerPetOverlayIpc({
 })
 
 // --- HUD mode (chrome-free floating chat) — see hud-ipc.ts. ---------------
-registerHudIpc({
+const hudIpc = registerHudIpc({
   isMac: IS_MAC,
+  isWindows: IS_WINDOWS,
+  glassSupported: GLASS_SUPPORTED,
+  getTranslucencyState: () => translucencyState,
   getHudWindow: () => hudWindow,
   openHudWindow,
   closeHudWindow,
@@ -12145,6 +12179,7 @@ registerHudIpc({
     hudSessionId = value
   }
 })
+
 ipcMain.handle('hermes:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
   // reset connection state so the next startHermes() call restarts the
@@ -13896,6 +13931,12 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
   }
 
   scheduleTranslucencyWrite()
+
+  // The HUD's frost reads the same setting but answers on its own terms (see
+  // hudFrostFor) — and it is a transparent window, so it is deliberately not
+  // in the chat fan-out below. It self-diffs, so an unrelated change costs
+  // nothing native.
+  hudIpc.applyHudFrost()
 
   if (changed.backing || changed.material || changed.opacity) {
     for (const win of BrowserWindow.getAllWindows()) {

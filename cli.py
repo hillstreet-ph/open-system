@@ -4094,10 +4094,34 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
     "\x1b[0m"      # reset text attributes
     "\x1b[?25h"    # ensure cursor visible
 )
-_EXTENDED_ENTER_KEYS_SEQ = "\x1b[>1u\x1b[>4;2m"
+_KITTY_KEYBOARD_PUSH_SEQ = "\x1b[>1u"
+_MODIFY_OTHER_KEYS_SEQ = "\x1b[>4;2m"
+_EXTENDED_ENTER_KEYS_SEQ = _KITTY_KEYBOARD_PUSH_SEQ + _MODIFY_OTHER_KEYS_SEQ
 
 
 _BACKSLASH_LINE_CONTINUATION_RE = re.compile(r"\\[ \t]*$")
+
+
+def _is_ghostty_terminal(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether the terminal is Ghostty (either detection path).
+
+    Ghostty must be pushed ONLY modifyOtherKeys, not the Kitty keyboard
+    protocol: its Kitty disambiguate-mode implementation strips the Alt
+    modifier from the Backspace key, so Option+Backspace arrives as bare
+    \\x7f instead of the CSI-u form ``\\x1b[127;3u`` the protocol calls for
+    (upstream Ghostty bug), breaking backward-kill-word (#87630
+    regression).  Ghostty implements modifyOtherKeys correctly (it then
+    emits ``\\x1b[27;3;127~``, which the alias table also maps).
+
+    Matches exactly the two conditions that admit Ghostty through
+    ``_terminal_supports_extended_enter_keys``.
+    """
+    if env is None:
+        env = os.environ
+    return (
+        (env.get("TERM_PROGRAM") or "").strip() == "ghostty"
+        or (env.get("TERM") or "").strip().lower() == "xterm-ghostty"
+    )
 
 
 def _terminal_supports_extended_enter_keys(env: Optional[Mapping[str, str]] = None) -> bool:
@@ -4131,7 +4155,9 @@ def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = 
 
     Writes the Kitty keyboard protocol push (CSI >1u, disambiguate mode) AND
     xterm modifyOtherKeys level 2 (CSI >4;2m), mirroring the Ink TUI —
-    terminals honor whichever protocol they implement.  Both are needed:
+    terminals honor whichever protocol they implement (except Ghostty, which
+    gets only modifyOtherKeys; see the Ghostty exception below).  Both are
+    needed:
     kitty-the-terminal removed modifyOtherKeys support entirely (it only
     speaks its own protocol), while tmux/VS Code only accept modifyOtherKeys.
 
@@ -4148,20 +4174,25 @@ def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = 
     Ctrl+C, which is handled by prompt_toolkit's ``c-c`` binding (raw mode
     clears ISIG, so the kernel INTR path was never in play for the CLI).
 
+    Ghostty exception: pushes only modifyOtherKeys — see
+    ``_is_ghostty_terminal`` for the full rationale (#87630).
+
     The exit reset sequence pops/resets both modes, so this is safe across
     normal exits, Ctrl+C, and SIGTERM cleanup.
     """
     if not _terminal_supports_extended_enter_keys(env):
         return False
+    # Ghostty exception: only modifyOtherKeys — see _is_ghostty_terminal.
+    seq = _MODIFY_OTHER_KEYS_SEQ if _is_ghostty_terminal(env) else _EXTENDED_ENTER_KEYS_SEQ
     try:
         target = output
         if target is not None and hasattr(target, "write_raw"):
-            target.write_raw(_EXTENDED_ENTER_KEYS_SEQ)
+            target.write_raw(seq)
             target.flush()
             return True
         stream = sys.stdout
         if stream is not None and stream.isatty():
-            stream.write(_EXTENDED_ENTER_KEYS_SEQ)
+            stream.write(seq)
             stream.flush()
             return True
     except Exception:
@@ -4858,6 +4889,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         api_key: str = None,
         base_url: str = None,
         max_turns: int = None,
+        run_budget: float = None,
         verbose: Optional[bool] = None,
         compact: bool = False,
         resume: str = None,
@@ -5125,6 +5157,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self.max_turns = 500
         else:
             self.max_turns = 500
+
+        # Wall-clock run budget: CLI flag wins over config; both optional.
+        # None keeps the feature fully off (AIAgent stays dormant).
+        if run_budget is not None:
+            self.run_budget_seconds = run_budget
+        else:
+            self.run_budget_seconds = CLI_CONFIG["agent"].get("run_budget_seconds")
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -9204,6 +9243,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print()
     
 
+    def _handle_whoami_command(self):
+        """Display slash-command access for the local CLI surface."""
+        import getpass
+
+        try:
+            user_name = getpass.getuser() or "?"
+        except Exception:
+            user_name = "?"
+
+        print()
+        print("  You:            cli (local terminal)")
+        print(f"  User:           {user_name}")
+        print("  Tier:           unrestricted")
+        print("  Slash commands: all available")
+        print()
+
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
         # Get terminal config from environment (which was set from cli-config.yaml)
@@ -9222,10 +9277,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # ``self.api_key`` may be a callable (Azure Foundry Entra ID bearer
         # provider). Never invoke it; just identify the auth surface.
         from agent.azure_identity_adapter import is_token_provider
-        if is_token_provider(self.api_key):
+
+        # Prefer the LIVE agent's credential when one exists: HermesCLI's
+        # constructor seeds self.api_key from OPENAI/OPENROUTER env vars
+        # before provider resolution runs, so on non-OpenAI providers (Nous,
+        # Anthropic, ...) the constructor value is a different vendor's key
+        # than the one actually authenticating requests. /config displaying
+        # an sk-proj-... OpenAI key next to a Nous base URL was the visible
+        # symptom (full-surface CLI QA sweep, Aug 2026).
+        display_key = self.api_key
+        agent = getattr(self, "agent", None)
+        if agent is not None and getattr(agent, "api_key", None):
+            display_key = agent.api_key
+        if is_token_provider(display_key):
             api_key_display = "Microsoft Entra ID"
-        elif isinstance(self.api_key, str) and len(self.api_key) > 12:
-            api_key_display = f"{self.api_key[:8]}...{self.api_key[-4:]}"
+        elif isinstance(display_key, str) and len(display_key) > 12:
+            api_key_display = f"{display_key[:8]}...{display_key[-4:]}"
         else:
             api_key_display = "Not set!"
         
@@ -11373,6 +11440,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return False
         elif canonical == "help":
             self.show_help()
+        elif canonical == "whoami":
+            self._handle_whoami_command()
         elif canonical == "profile":
             self._handle_profile_command()
         elif canonical == "tools":
@@ -12646,10 +12715,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         from hermes_cli.colors import Colors as _Colors
         from tools.approval import (
+            _YOLO_MODE_FROZEN,
             disable_session_yolo,
             enable_session_yolo,
             is_session_yolo_enabled,
         )
+
+        # Process-level YOLO (--yolo flag / HERMES_YOLO_MODE at startup) is
+        # frozen into tools.approval at import time and cannot be disabled by
+        # the session toggle. Before this guard, /yolo printed "YOLO mode OFF —
+        # dangerous commands will require approval" while every command kept
+        # auto-approving (the frozen flag short-circuits the approval gate
+        # ahead of the session check) — a false safety claim. Say the truth
+        # instead of toggling a bypass that has no effect.
+        if _YOLO_MODE_FROZEN:
+            _cprint(
+                f"  ⚡ YOLO is {_Colors.BOLD}{_Colors.RED}locked ON{_Colors.RESET}"
+                " for this process (started with --yolo / HERMES_YOLO_MODE)."
+                " /yolo cannot disable it — restart without the flag to"
+                " re-enable approvals."
+            )
+            return
 
         session_key = self.session_id or "default"
         # ``getattr`` guard: tests exercise this method unbound against a
@@ -12915,7 +13001,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         self.agent, "context_compressor", None
                     ),
                 )
-                if summary.get("aborted") or summary.get("fallback_used"):
+                if (
+                    summary.get("aborted")
+                    or summary.get("fallback_used")
+                    or summary.get("refused_would_grow")
+                ):
                     icon = "⚠️"
                 else:
                     icon = "🗜️" if summary["noop"] else "✅"
@@ -20174,6 +20264,7 @@ def main(
     api_key: str = None,
     base_url: str = None,
     max_turns: int = None,
+    run_budget: float = None,
     verbose: Optional[bool] = None,
     quiet: bool = False,
     compact: bool = False,
@@ -20370,6 +20461,7 @@ def main(
         api_key=api_key,
         base_url=base_url,
         max_turns=max_turns,
+        run_budget=run_budget,
         verbose=verbose,
         compact=compact,
         resume=resume,

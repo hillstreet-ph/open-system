@@ -67,6 +67,7 @@ except ModuleNotFoundError:
 # visible console when this process is windowless (pythonw gateway + every
 # kanban worker).  No-op on POSIX; never raises.
 from hermes_cli._subprocess_compat import suppress_platform_ver_console
+from hermes_cli.cli_output import line_input
 
 suppress_platform_ver_console()
 
@@ -179,6 +180,7 @@ def _run_and_exit_oneshot(
     model: object = None,
     provider: object = None,
     toolsets: object = None,
+    skills: object = None,
     usage_file: object = None,
 ) -> None:
     try:
@@ -189,6 +191,7 @@ def _run_and_exit_oneshot(
             model=model,
             provider=provider,
             toolsets=toolsets,
+            skills=skills,
             usage_file=usage_file,
         )
     except KeyboardInterrupt:
@@ -3111,22 +3114,50 @@ def cmd_chat(args):
         except Exception:
             pass
 
-    # Sync bundled skills on every CLI launch. Runs in a background daemon
-    # thread: the sync is idempotent, hash-gated (unchanged skills are
+    # Sync bundled skills on every CLI launch. Normally runs in a background
+    # daemon thread: the sync is idempotent, hash-gated (unchanged skills are
     # skipped), and nothing on the banner path depends on it, yet the scan
     # alone costs ~120-170ms of rglob/hashing on the startup path. Skill
     # loading happens at agent init (first message), by which point the
-    # sync has long finished; a same-instant race would only matter in the
-    # rare launch right after `hermes update` changed a bundled skill.
+    # sync has long finished.
+    #
+    # FIRST RUN is the exception: with an empty ~/.hermes/skills the banner
+    # prefetch races the background sync, caches an empty skills index, and
+    # the very first launch greets the user with "No skills installed ·
+    # 0 skills" while 69 bundled skills land milliseconds later (full-surface
+    # CLI QA sweep, Aug 2026). Run the sync in the foreground exactly once —
+    # only when the skills dir has no SKILL.md yet — so the first impression
+    # matches reality; every later launch keeps the background path.
+    def _skills_dir_is_unseeded() -> bool:
+        try:
+            from hermes_cli.config import get_hermes_home
+            skills_dir = Path(get_hermes_home()) / "skills"
+            if not skills_dir.is_dir():
+                return True
+            return next(skills_dir.rglob("SKILL.md"), None) is None
+        except Exception:
+            return False
+
     def _skills_sync_bg() -> None:
         try:
             _sync_bundled_skills_for_startup()
         except Exception:
             pass
 
-    threading.Thread(
-        target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
-    ).start()
+    if _skills_dir_is_unseeded():
+        _skills_sync_bg()
+        # The banner prefetch thread (started above) may have scanned the
+        # still-empty dir and cached an empty skills index — drop it so the
+        # banner recomputes against the freshly seeded tree.
+        try:
+            import hermes_cli.banner as _banner_mod
+            _banner_mod._available_skills_cache = None
+        except Exception:
+            pass
+    else:
+        threading.Thread(
+            target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
+        ).start()
 
     # --yolo: bypass all dangerous command approvals.
     # Also set in main() before _prepare_agent_startup() — that is the
@@ -3220,6 +3251,7 @@ def cmd_chat(args):
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
+        "run_budget": getattr(args, "run_budget", None),
         "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
         "compact": getattr(args, "compact", False),
@@ -3337,11 +3369,11 @@ def cmd_whatsapp(args):
             response = "n"
         if response.lower() in {"y", "yes"}:
             if wa_mode == "bot":
-                phone = input(
+                phone = line_input(
                     "  Phone numbers that can message the bot (comma-separated): "
                 ).strip()
             else:
-                phone = input("  Your phone number (e.g. 15551234567): ").strip()
+                phone = line_input("  Your phone number (e.g. 15551234567): ").strip()
             if phone:
                 save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
                 print(f"  ✓ Updated to: {phone}")
@@ -3349,11 +3381,11 @@ def cmd_whatsapp(args):
         print()
         if wa_mode == "bot":
             print("  Who should be allowed to message the bot?")
-            phone = input(
+            phone = line_input(
                 "  Phone numbers (comma-separated, or * for anyone): "
             ).strip()
         else:
-            phone = input("  Your phone number (e.g. 15551234567): ").strip()
+            phone = line_input("  Your phone number (e.g. 15551234567): ").strip()
         if phone:
             save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
             print(f"  ✓ Allowed users set: {phone}")
@@ -4407,7 +4439,7 @@ def _aux_flow_provider_model(
         print(f"No curated model list for {provider_slug}.")
         print("Enter a model slug manually (blank = use provider default):")
         try:
-            val = input("Model: ").strip()
+            val = line_input("Model: ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
             return
@@ -4448,7 +4480,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
         url_prompt = (
             f"Base URL [{current_base_url}]: " if current_base_url else "Base URL: "
         )
-        url = input(url_prompt).strip()
+        url = line_input(url_prompt).strip()
     except (KeyboardInterrupt, EOFError):
         print()
         return
@@ -4462,7 +4494,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
             if current_model
             else "Model slug (optional): "
         )
-        model = input(model_prompt).strip()
+        model = line_input(model_prompt).strip()
     except (KeyboardInterrupt, EOFError):
         print()
         return
@@ -11015,7 +11047,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
     print()
     try:
-        username = input("  Username [admin]: ").strip() or "admin"
+        username = line_input("  Username [admin]: ").strip() or "admin"
         password = getpass.getpass("  Password: ")
         confirm = getpass.getpass("  Confirm password: ")
     except (EOFError, KeyboardInterrupt):
@@ -11943,6 +11975,7 @@ def _try_fast_chat_launch() -> bool:
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
         )
 
@@ -12000,6 +12033,7 @@ def _try_termux_fast_cli_launch() -> bool:
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
         )
 
@@ -13878,6 +13912,7 @@ def main():
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
         )
 
