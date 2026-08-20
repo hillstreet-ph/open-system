@@ -1,0 +1,11 @@
+# Local supabase CLI config (optional). Production project is remote.
+# Do not put secrets here.
+
+[project]
+id = "xrolgpxvgznjuplyrkny"
+
+[api]
+enabled = true
+
+[db]
+major_version = 15

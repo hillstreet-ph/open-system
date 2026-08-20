@@ -1,0 +1,25 @@
+name: Supabase migrations (Open-System)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type APPLY to run migrations against production DATABASE_URL"
+        required: true
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    if: github.repository == 'hillstreet-ph/open-system' && github.event.inputs.confirm == 'APPLY'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: ./scripts/supabase/apply-migrations.sh
