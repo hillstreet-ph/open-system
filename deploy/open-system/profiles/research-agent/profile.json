@@ -1,0 +1,6 @@
+{
+  "slug": "research-agent",
+  "permission_profile": "research-agent",
+  "description": "Research agent: web and knowledge. No production filesystem or secrets.",
+  "enabled": true
+}

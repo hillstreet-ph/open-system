@@ -1,0 +1,19 @@
+# Example production config fragments for Open-System / Hermes.
+# Merge carefully into HERMES_HOME/config.yaml — never commit real secrets.
+
+dashboard:
+  basic_auth:
+    username: admin
+    # prefer password_hash in production; or set via HERMES_DASHBOARD_BASIC_AUTH_* env
+
+# Model: use OpenRouter or other provider via env OPENROUTER_API_KEY
+# model:
+#   provider: openrouter
+#   model: openai/gpt-4o-mini
+
+# API server is primarily env-driven: API_SERVER_ENABLED, API_SERVER_KEY, etc.
+
+# Memory / knowledge: Hermes native memory under HERMES_HOME; optional Supabase pgvector later
+# plugins: enable only trusted plugins (see docs/CAPABILITIES.md)
+
+# Telegram: TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USERS env

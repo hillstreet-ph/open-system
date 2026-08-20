@@ -1,0 +1,6 @@
+{
+  "slug": "dev-agent",
+  "permission_profile": "dev-agent",
+  "description": "Developer agent: code assistance, GitHub-oriented. Sandboxed terminal preferred.",
+  "enabled": true
+}

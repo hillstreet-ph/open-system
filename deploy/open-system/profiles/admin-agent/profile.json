@@ -1,0 +1,6 @@
+{
+  "slug": "admin-agent",
+  "permission_profile": "admin-agent",
+  "description": "Admin agent for Open-System operations. Broad tools only for allowlisted admins.",
+  "enabled": true
+}

@@ -1,0 +1,6 @@
+{
+  "slug": "ops-agent",
+  "permission_profile": "ops-agent",
+  "description": "Operations agent: health, logs summary, deploy status. No unrestricted host shell.",
+  "enabled": true
+}
