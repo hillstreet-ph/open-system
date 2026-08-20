@@ -1,0 +1,34 @@
+name: GitHub → Supabase deployment sync
+
+# On successful Docker release path, record deployment metadata into Supabase.
+on:
+  workflow_run:
+    workflows: ["Open-System Docker Release"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    if: github.repository == 'hillstreet-ph/open-system' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record deployment
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPEN_SYSTEM_GIT_SHA: ${{ github.sha }}
+          OPEN_SYSTEM_IMAGE_REF: kairocasino/open-system:latest
+          OPEN_SYSTEM_ENV: production
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
+            echo "Supabase secrets not set; skip."
+            exit 0
+          fi
+          chmod +x scripts/supabase/record-deployment.sh
+          GIT_SHA="$OPEN_SYSTEM_GIT_SHA" IMAGE_REF="$OPEN_SYSTEM_IMAGE_REF" \
+            ENV_NAME="$OPEN_SYSTEM_ENV" ./scripts/supabase/record-deployment.sh || true

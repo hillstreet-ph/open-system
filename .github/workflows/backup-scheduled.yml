@@ -1,0 +1,102 @@
+name: Scheduled backup (Open-System)
+
+# Runs checklist + optional remote jobs when secrets are configured.
+# Never prints secret values. Does not access Zeabur volume directly from GHA
+# unless BACKUP_SSH_* secrets are provided by the operator.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      run_db_backup:
+        description: "Attempt Supabase pg_dump if DATABASE_URL secret exists"
+        type: boolean
+        default: false
+      record_sync_event:
+        description: "POST sync event to Supabase REST if service role configured"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  backup-checklist:
+    if: github.repository == 'hillstreet-ph/open-system'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Emit operator checklist
+        run: |
+          {
+            echo "### Open-System automated backup"
+            echo "- Volume state: run \`scripts/backup/backup-state.sh\` on host/Zeabur with HERMES_HOME=/opt/data"
+            echo "- Verify: \`scripts/backup/verify-backup.sh\`"
+            echo "- Database: \`scripts/supabase/backup-database.sh\` with DATABASE_URL"
+            echo "- Offsite: set BACKUP_S3_URI + AWS credentials"
+            echo "- Encrypt: set BACKUP_ENCRYPT_KEY"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  supabase-sync-event:
+    if: github.repository == 'hillstreet-ph/open-system' && (github.event_name == 'schedule' || inputs.record_sync_event == true)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record sync event (optional)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
+            echo "Supabase secrets not configured; skipping REST sync event."
+            exit 0
+          fi
+          BODY=$(python3 -c 'import json,os,time; print(json.dumps({
+            "source":"github",
+            "event_type":"scheduled_backup_tick",
+            "payload":{"repo":os.environ.get("GITHUB_REPOSITORY"),"sha":os.environ.get("GITHUB_SHA"),"at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime())}
+          }))')
+          code=$(curl -sS -o /tmp/out.json -w '%{http_code}' -X POST \
+            "${SUPABASE_URL%/}/rest/v1/open_system_sync_events" \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "$BODY" || true)
+          echo "HTTP $code"
+          if [ "$code" != "201" ] && [ "$code" != "200" ]; then
+            echo "Note: table may not exist yet — apply supabase/migrations first."
+            cat /tmp/out.json || true
+            exit 0
+          fi
+
+  database-backup:
+    if: github.repository == 'hillstreet-ph/open-system' && github.event_name == 'workflow_dispatch' && inputs.run_db_backup == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pg_dump
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Dump database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_ENCRYPT_KEY: ${{ secrets.BACKUP_ENCRYPT_KEY }}
+          BACKUP_S3_URI: ${{ secrets.BACKUP_S3_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+          OPEN_SYSTEM_GIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL secret missing; cannot dump."
+            exit 1
+          fi
+          ./scripts/supabase/backup-database.sh
+      - name: Upload artifact (short retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup
+          path: /tmp/open-system-backups/
+          retention-days: 7
