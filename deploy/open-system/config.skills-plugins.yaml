@@ -1,0 +1,34 @@
+# Merge into $HERMES_HOME/config.yaml (or drop as overlay).
+# Enables trusted first-party plugins + keeps dangerous capabilities constrained.
+# Docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/skills
+#       https://hermes-agent.nousresearch.com/docs/developer-guide/agent-loop
+
+plugins:
+  enabled:
+    - disk-cleanup
+    - security-guidance
+    - memory
+    - web/ddgs
+    - cron_providers/chronos
+  disabled:
+    # Keep off until credentials + memory budget are ready
+    - spotify
+    - google_meet
+    - teams_pipeline
+
+# Toolsets / terminal policy (Hermes honors these when present)
+tools:
+  # Prefer sandbox for terminal when available
+  terminal_backend: local   # change to docker if sandbox image is configured
+  browser: true
+  web: true
+  code_execution: true
+
+agent:
+  max_turns: 80
+
+# Skills platform policy: leave platform filters to hermes skills TUI;
+# optional skills are installed via scripts/enablement/install-official-skills.sh
+
+skills:
+  config: {}
