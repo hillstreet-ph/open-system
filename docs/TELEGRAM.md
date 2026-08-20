@@ -27,3 +27,22 @@ Admin changes should not require source edits.
 
 - Public-agent: no production shell, no secret filesystem
 - Admin-agent: explicit allowlist only
+
+## Multi-group routing (production)
+
+Use profile templates under `deploy/open-system/profiles/` and the example
+`deploy/open-system/telegram/routes.example.yaml`.
+
+Persist durable routes in Supabase table `open_system_telegram_routes` after
+migrations are applied (`docs/INTEGRATION.md`).
+
+### Suggested mapping
+
+| Group purpose | Profile |
+|---------------|---------|
+| Admin / ops | ops-agent or admin-agent |
+| Research | research-agent |
+| Public community | public-agent |
+| Engineering | dev-agent |
+
+Always set `TELEGRAM_ALLOWED_USERS` for DM access control.

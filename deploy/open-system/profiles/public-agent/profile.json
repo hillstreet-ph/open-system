@@ -1,0 +1,6 @@
+{
+  "slug": "public-agent",
+  "permission_profile": "public-agent",
+  "description": "Public-facing chat agent. Safe tools only; no terminal, no secrets, no deploy.",
+  "enabled": true
+}

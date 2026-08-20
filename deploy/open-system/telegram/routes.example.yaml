@@ -1,0 +1,42 @@
+# Example multi-agent Telegram routing (copy to HERMES_HOME, do not commit secrets).
+# Map group chat IDs to agent profiles. Obtain chat IDs from Telegram updates.
+
+version: 1
+default_profile: public-agent
+
+# Global allowlist (numeric Telegram user IDs). Empty = deny unknown (pairing policy).
+allowed_users:
+  - 8296776401
+
+routes:
+  # Example: replace chat_id with real group IDs
+  - chat_id: "-100XXXXXXXXXX"
+    thread_id: null
+    agent_profile: ops-agent
+    enabled: true
+  - chat_id: "-100YYYYYYYYYY"
+    thread_id: null
+    agent_profile: research-agent
+    enabled: true
+  - chat_id: "-100ZZZZZZZZZZ"
+    thread_id: null
+    agent_profile: public-agent
+    enabled: true
+
+# Tool policy hints (enforced via Hermes config / allowlists in production)
+profiles:
+  admin-agent:
+    tools: [browser, code_execution, web, memory]
+    terminal: sandboxed_only
+  ops-agent:
+    tools: [web, memory]
+    terminal: disabled
+  research-agent:
+    tools: [web, browser, memory]
+    terminal: disabled
+  dev-agent:
+    tools: [web, code_execution, memory]
+    terminal: sandboxed_only
+  public-agent:
+    tools: [web, memory]
+    terminal: disabled
