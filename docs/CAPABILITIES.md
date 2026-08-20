@@ -16,3 +16,23 @@ Hermes provides skills, plugins, MCP, browser, terminal, code execution, cron, A
 **Installed ≠ Configured ≠ Enabled ≠ Authorized.**
 
 Do not enable all powerful tools for public Telegram agents.
+
+## Enablement pack (Open-System)
+
+See `deploy/open-system/ENABLEMENT.md` and `scripts/enablement/install-official-skills.sh`.
+
+Curated optional skills for ops/dev (not the full catalog):
+
+- `official/devops/docker-management`
+- `official/devops/hermes-s6-container-supervision`
+- `official/devops/watchers`
+- `official/research/duckduckgo-search`
+- `official/research/searxng-search`
+- `official/mcp/fastmcp`
+- `official/mcp/mcporter`
+- `official/web-development/page-agent`
+
+Plugins default-enabled in `deploy/open-system/config.skills-plugins.yaml`:
+`disk-cleanup`, `security-guidance`, `memory`, `web/ddgs`, `cron_providers/chronos`.
+
+Full optional catalog: https://hermes-agent.nousresearch.com/docs/reference/optional-skills-catalog
