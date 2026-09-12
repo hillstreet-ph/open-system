@@ -1,6 +1,9 @@
 name: GitHub → Supabase deployment sync
 
-# On successful Docker release path, record deployment metadata into Supabase.
+# A successful Docker release proves only that an image was published.
+# Automatic runs record non-production artifact metadata. Staging and
+# production deployment records require separate verified promotion evidence
+# and the existing human approval gate.
 on:
   workflow_run:
     workflows: ["Open-System Docker Release"]
@@ -16,13 +19,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Record deployment
+
+      - name: Resolve immutable artifact identity
+        id: artifact
+        env:
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          image="${DOCKERHUB_IMAGE:-}"
+          if [ -z "$image" ] && [ -n "${DOCKERHUB_USERNAME:-}" ]; then
+            image="${DOCKERHUB_USERNAME}/open-system"
+          fi
+          if [ -z "$image" ] || [ -z "${SOURCE_SHA:-}" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Artifact identity is incomplete; Supabase record skipped."
+            exit 0
+          fi
+          short_sha="${SOURCE_SHA:0:7}"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "git_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${image}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Record published build artifact
+        if: steps.artifact.outputs.available == 'true'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          OPEN_SYSTEM_GIT_SHA: ${{ github.sha }}
-          OPEN_SYSTEM_IMAGE_REF: kairocasino/open-system:latest
-          OPEN_SYSTEM_ENV: production
+          OPEN_SYSTEM_GIT_SHA: ${{ steps.artifact.outputs.git_sha }}
+          OPEN_SYSTEM_IMAGE_REF: ${{ steps.artifact.outputs.image_ref }}
+          OPEN_SYSTEM_ENV: build-artifact
         run: |
           set -euo pipefail
           if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
@@ -31,4 +58,13 @@ jobs:
           fi
           chmod +x scripts/supabase/record-deployment.sh
           GIT_SHA="$OPEN_SYSTEM_GIT_SHA" IMAGE_REF="$OPEN_SYSTEM_IMAGE_REF" \
-            ENV_NAME="$OPEN_SYSTEM_ENV" ./scripts/supabase/record-deployment.sh || true
+            ENV_NAME="$OPEN_SYSTEM_ENV" ./scripts/supabase/record-deployment.sh
+
+      - name: State verification boundary
+        run: |
+          {
+            echo "### Open-System artifact synchronization"
+            echo
+            echo "- Docker publish metadata is recorded as build-artifact, not production."
+            echo "- Production requires staging smoke, live health and critical-path evidence, rollback reference, and written approval."
+          } >> "$GITHUB_STEP_SUMMARY"
