@@ -91,7 +91,7 @@ jobs:
 
   # `hermes update` -- the route most users take.
   update:
-    if: github.event_name != 'workflow_dispatch' || inputs.route != 'installer'
+    if: needs.pick-releases.outputs.tags != '[]' && (github.event_name != 'workflow_dispatch' || inputs.route != 'installer')
     needs: pick-releases
     strategy:
       # One release breaking is worth knowing about even if another already
@@ -107,7 +107,7 @@ jobs:
   # Re-running the curl one-liner over an existing checkout: autostash + pull
   # rather than the updater's own git handling.
   installer:
-    if: github.event_name != 'workflow_dispatch' || inputs.route != 'update'
+    if: needs.pick-releases.outputs.tags != '[]' && (github.event_name != 'workflow_dispatch' || inputs.route != 'update')
     needs: pick-releases
     strategy:
       fail-fast: false
