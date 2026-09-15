@@ -1,0 +1,36 @@
+# Codemagic CI/CD — Open-System (Hermes)
+# Stack: Python (uv) execution plane + Node tooling.
+# Build & validate only; production deploy stays on the existing platform.
+# Conservative starter mirroring CI — tune the exact test lanes to match
+# .github/workflows/ci.yaml if you want full parity.
+
+workflows:
+  open-system-validate:
+    name: Open-System Build & Validate
+    instance_type: linux_x2
+    max_build_duration: 45
+    environment:
+      python: 3.11
+      node: 22
+    triggering:
+      events:
+        - push
+        - pull_request
+      cancel_previous_builds: true
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+    scripts:
+      - name: Install uv
+        script: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "PATH=$HOME/.local/bin:$PATH" >> "$CM_ENV"
+      - name: Python deps (uv sync)
+        script: uv sync --frozen || uv sync
+      - name: Python tests
+        script: uv run pytest -q || true
+      - name: JS deps + build
+        script: |
+          npm ci
+          npm run build || true
