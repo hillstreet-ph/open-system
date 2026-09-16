@@ -7,7 +7,7 @@ on:
       image:
         description: "Image ref (repo:tag or repo@sha256:…)"
         required: true
-        default: "kairocasino/open-system:latest"
+        default: "hillstreet/open-system:latest"
   pull_request:
     paths:
       - "Dockerfile"
