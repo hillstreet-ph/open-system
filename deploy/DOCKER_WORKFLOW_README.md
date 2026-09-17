@@ -15,4 +15,4 @@ Create a container-publish environment in Settings > Environments.
 
 ## Image
 
-Published to: hillstreetph/open-system
+Published to: hillstreet/open-system

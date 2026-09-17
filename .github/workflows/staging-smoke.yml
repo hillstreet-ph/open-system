@@ -7,7 +7,7 @@ on:
       image:
         description: "Image ref (repo:tag or repo@sha256:…)"
         required: true
-        default: "kairocasino/open-system:latest"
+        default: "hillstreet/open-system:latest"
   pull_request:
     paths:
       - "Dockerfile"
@@ -47,7 +47,7 @@ jobs:
             -e API_SERVER_KEY=staging-smoke-key-32chars-min \
             -e HERMES_GATEWAY_BOOTSTRAP_STATE=running \
             -p 8642:8642 \
-            "$IMG"
+            "$IMG" gateway run
           # Give s6 time; do not fail the whole job on slow cold start — report status
           for i in $(seq 1 36); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:8642/health || true)
