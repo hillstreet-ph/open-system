@@ -4,7 +4,7 @@
 # Fork-adapted from NousResearch/hermes-agent docker.yml
 # Changes:
 #   - Repository gate: hillstreet-ph/open-system (was NousResearch/hermes-agent)
-#   - Image name: hillstreetph/open-system (was nousresearch/hermes-agent)
+#   - Image name: hillstreet/open-system (was nousresearch/hermes-agent)
 #   - Added semantic version tags on release
 #   - Simplified test step (no upstream test harness dependency)
 # ============================================================================
@@ -31,7 +31,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: hillstreetph/open-system
+  IMAGE_NAME: hillstreet/open-system
 
 jobs:
   # ── Detect changed files ──────────────────────────────────────────────────

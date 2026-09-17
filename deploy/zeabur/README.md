@@ -19,7 +19,7 @@
 Prefer immutable digest after **Open-System Docker Release** succeeds:
 
 ```text
-kairocasino/open-system@sha256:<digest>
+hillstreet/open-system@sha256:<digest>
 ```
 
 Or tags: `:sha-<short>`, `:stable` (after promotion), avoid relying only on `:latest`.
