@@ -24,7 +24,7 @@ hillstreet/open-system@sha256:<digest>
 
 Or tags: `:sha-<short>`, `:stable` (after promotion), avoid relying only on `:latest`.
 
-Leave **ENTRYPOINT / CMD empty** on Zeabur (use image defaults: `entrypoint-dispatch.sh` + s6).
+Keep the image **ENTRYPOINT** unchanged and set the Zeabur service command to `gateway run`. An empty command launches the interactive Hermes CLI, not the long-running API/gateway path validated by staging smoke.
 
 ## Networking (canonical from Hermes source)
 

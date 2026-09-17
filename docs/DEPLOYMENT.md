@@ -18,7 +18,7 @@ docker run -d --name open-system \
   -e HERMES_GATEWAY_BOOTSTRAP_STATE=running \
   -v open-system-data:/opt/data \
   -p 9119:9119 -p 8642:8642 \
-  kairocasino/open-system@sha256:<DIGEST>
+  hillstreet/open-system@sha256:<DIGEST> gateway run
 ```
 
 Same image runs on Zeabur, VPS, or local Docker.

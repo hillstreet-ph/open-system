@@ -39,12 +39,13 @@ See `deploy/open-system/telegram/routes.example.yaml` and `docs/TELEGRAM.md`.
 
 ## Zeabur production checklist
 
-1. Image pin: `kairocasino/open-system@sha256:…` or `sha-<git>`
-2. Domain → port 9119
-3. Memory ≥1536 MiB (prefer 4GB node)
-4. Single volume `/opt/data`
-5. Env: dashboard auth, API key, Telegram, OpenRouter
-6. Backup: volume script + Supabase `pg_dump` schedule
+1. Image pin: `hillstreet/open-system@sha256:…` or `sha-<git>`
+2. Start command: `gateway run`
+3. Domain → port 9119
+4. Memory ≥1536 MiB (prefer 4GB node)
+5. Single volume `/opt/data`
+6. Env: dashboard auth, API key, Telegram, OpenRouter
+7. Backup: volume script + Supabase `pg_dump` schedule
 
 ## What “complete” does not mean
 
