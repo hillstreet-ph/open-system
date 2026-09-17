@@ -12,10 +12,14 @@
 Prefer digest pin:
 
 ```text
-kairocasino/open-system@sha256:<digest>
+hillstreet/open-system@sha256:<digest>
 ```
 
 Tags: `sha-<short>`, `stable` (after promotion), avoid `:latest` as sole identity.
+
+## Start command
+
+Set the service command to `gateway run`. Do not leave it empty: the image default launches the interactive Hermes CLI, which is not the long-running API/gateway path validated by staging smoke.
 
 ## Volume
 
