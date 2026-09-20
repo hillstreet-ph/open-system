@@ -44,8 +44,8 @@ function installRaf(startId = 1) {
     frames.delete(id)
   })
 
-  Object.defineProperty(window, 'requestAnimationFrame', { configurable: true, value: request })
-  Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: cancel })
+  Object.defineProperty(window, 'requestAnimationFrame', { configurable: true, value: request, writable: true })
+  Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: cancel, writable: true })
 
   return {
     pending: () => frames.size,

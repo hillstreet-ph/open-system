@@ -19,8 +19,8 @@ function installRaf() {
   const request = vi.fn((_callback: FrameRequestCallback) => 1)
   const cancel = vi.fn()
 
-  Object.defineProperty(window, 'requestAnimationFrame', { configurable: true, value: request })
-  Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: cancel })
+  Object.defineProperty(window, 'requestAnimationFrame', { configurable: true, value: request, writable: true })
+  Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: cancel, writable: true })
 
   return { cancel, request }
 }
