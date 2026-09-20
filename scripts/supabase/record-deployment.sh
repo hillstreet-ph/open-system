@@ -28,6 +28,7 @@ if ! HTTP_STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   echo "Artifact record request failed before HTTP confirmation." >&2
   exit 1
 fi
+# A row is confirmed only after Supabase returns a 2xx response.
 case "$HTTP_STATUS" in
   2[0-9][0-9]) echo "DEPLOYMENT_RECORDED" ;;
   *)
