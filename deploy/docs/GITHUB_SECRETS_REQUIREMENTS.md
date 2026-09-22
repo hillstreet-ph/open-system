@@ -44,7 +44,7 @@
 | DOCKERHUB_TOKEN | Docker image publish (PR #24 workflow) | P0 |
 | DOCKERHUB_USERNAME | Docker image publish (PR #24 workflow) | P0 |
 | SUPABASE_ACCESS_TOKEN | Supabase management API | P0 |
-| SUPABASE_PROJECT_REF | Value: gnqpwewbgldonarggzax | P0 |
+| SUPABASE_PROJECT_REF | Value: huadtiuuoiriqrjpjxhr | P0 |
 | SUPABASE_URL | Supabase API endpoint | P0 |
 | SUPABASE_SERVICE_ROLE_KEY | Server-side Supabase access | P0 |
 | SUPABASE_JWT_SECRET | JWT token verification | P1 |
