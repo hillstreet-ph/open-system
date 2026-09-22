@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Upstream ref to sync (branch or tag, default main)"
+        description: "Upstream branch to sync (default main)"
         required: false
         default: "main"
 
@@ -45,8 +45,11 @@ jobs:
 
       - name: Resolve upstream ref
         id: ref
+        env:
+          REQUESTED_REF: ${{ github.event.inputs.ref || 'main' }}
         run: |
-          REF="${{ github.event.inputs.ref || 'main' }}"
+          REF="$REQUESTED_REF"
+          git check-ref-format "refs/heads/$REF"
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
           UPSTREAM_SHA=$(git rev-parse "upstream/$REF")
           echo "sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
@@ -54,11 +57,14 @@ jobs:
 
       - name: Check if already up to date
         id: status
+        env:
+          UPSTREAM_SHA: ${{ steps.ref.outputs.sha }}
+          UPSTREAM_REF: ${{ steps.ref.outputs.ref }}
         run: |
-          UPSTREAM=${{ steps.ref.outputs.sha }}
+          UPSTREAM="$UPSTREAM_SHA"
           if git merge-base --is-ancestor "$UPSTREAM" HEAD; then
             echo "behind=false" >> "$GITHUB_OUTPUT"
-            echo "Open-System already contains upstream ${{ steps.ref.outputs.ref }}@$UPSTREAM"
+            echo "Open-System already contains upstream $UPSTREAM_REF@$UPSTREAM"
           else
             echo "behind=true" >> "$GITHUB_OUTPUT"
             AHEAD=$(git rev-list --count HEAD.."$UPSTREAM" || echo "?")
@@ -69,34 +75,46 @@ jobs:
       - name: Create sync branch and merge
         if: steps.status.outputs.behind == 'true'
         id: branch
+        env:
+          SYNC_BRANCH: upstream-sync/${{ steps.ref.outputs.ref }}-${{ steps.ref.outputs.short }}
+          UPSTREAM_SHA: ${{ steps.ref.outputs.sha }}
         run: |
-          BRANCH="upstream-sync/${{ steps.ref.outputs.ref }}-${{ steps.ref.outputs.short }}"
-          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
-          git checkout -B "$BRANCH"
-          if git merge --no-ff "upstream/${{ steps.ref.outputs.ref }}" -m "chore(upstream): sync NousResearch/hermes-agent ${{ steps.ref.outputs.ref }}@${{ steps.ref.outputs.short }}"; then
+          git check-ref-format "refs/heads/$SYNC_BRANCH"
+          echo "name=$SYNC_BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -b "$SYNC_BRANCH"
+          if git merge --no-ff "$UPSTREAM_SHA" -m "chore(upstream): sync hermes-agent @$UPSTREAM_SHA"; then
             echo "conflict=false" >> "$GITHUB_OUTPUT"
           else
             echo "conflict=true" >> "$GITHUB_OUTPUT"
+            git diff --name-only --diff-filter=U
             git merge --abort || true
-            git reset --hard "upstream/${{ steps.ref.outputs.ref }}"
+            echo "::error::Upstream merge failed; fork history preserved and no branch pushed. Reconcile conflicts on a reviewed branch."
+            exit 1
           fi
-          git push -u origin "$BRANCH" --force-with-lease
+          # A stale existing branch must be reconciled, never overwritten.
+          git push -u origin "$SYNC_BRANCH"
 
       - name: Open pull request
         if: steps.status.outputs.behind == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SYNC_BRANCH: ${{ steps.branch.outputs.name }}
+          MERGE_CONFLICT: ${{ steps.branch.outputs.conflict }}
+          UPSTREAM_REF: ${{ steps.ref.outputs.ref }}
+          UPSTREAM_SHA: ${{ steps.ref.outputs.sha }}
+          UPSTREAM_SHORT: ${{ steps.ref.outputs.short }}
+          COMMITS_BEHIND: ${{ steps.status.outputs.commits_behind }}
         run: |
-          BRANCH="${{ steps.branch.outputs.name }}"
-          CONFLICT="${{ steps.branch.outputs.conflict }}"
+          BRANCH="$SYNC_BRANCH"
+          CONFLICT="$MERGE_CONFLICT"
           BODY=$(cat <<EOF
           ## Upstream sync from NousResearch/hermes-agent
 
           | Field | Value |
           |-------|-------|
-          | Upstream ref | \`${{ steps.ref.outputs.ref }}\` |
-          | Upstream SHA | \`${{ steps.ref.outputs.sha }}\` |
-          | Commits behind | ${{ steps.status.outputs.commits_behind }} |
+          | Upstream ref | \`${UPSTREAM_REF}\` |
+          | Upstream SHA | \`${UPSTREAM_SHA}\` |
+          | Commits behind | ${COMMITS_BEHIND} |
           | Auto-merge conflict | **${CONFLICT}** |
 
           ### Review checklist
@@ -109,7 +127,7 @@ jobs:
 
           **This workflow never merges to main.** Approve and merge only after review.
 
-          Upstream: https://github.com/NousResearch/hermes-agent/commits/${{ steps.ref.outputs.ref }}
+          Upstream: https://github.com/NousResearch/hermes-agent/commits/${UPSTREAM_REF}
           EOF
           )
           EXISTING=$(gh pr list --head "$BRANCH" --json number --jq 'length')
@@ -117,14 +135,19 @@ jobs:
             echo "PR already exists for $BRANCH"
           else
             gh pr create \
-              --title "chore(upstream): sync hermes-agent ${{ steps.ref.outputs.ref }}@${{ steps.ref.outputs.short }}" \
+              --title "chore(upstream): sync hermes-agent ${UPSTREAM_REF}@${UPSTREAM_SHORT}" \
               --body "$BODY" \
               --base main \
-              --head "$BRANCH" || true
+              --head "$BRANCH"
           fi
 
       - name: Summary
+        if: always()
+        env:
+          BEHIND: ${{ steps.status.outputs.behind }}
+          UPSTREAM_REF: ${{ steps.ref.outputs.ref }}
+          UPSTREAM_SHA: ${{ steps.ref.outputs.sha }}
         run: |
           echo "### Upstream sync" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Behind: ${{ steps.status.outputs.behind }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Upstream: ${{ steps.ref.outputs.ref }}@${{ steps.ref.outputs.short }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Behind: $BEHIND" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Upstream: $UPSTREAM_REF@$UPSTREAM_SHA" >> "$GITHUB_STEP_SUMMARY"

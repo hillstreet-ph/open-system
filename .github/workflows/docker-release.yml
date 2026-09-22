@@ -6,8 +6,8 @@ name: Open-System Docker Release
 # Required repository secrets:
 #   DOCKERHUB_USERNAME
 #   DOCKERHUB_TOKEN
-# Optional repository variable:
-#   DOCKERHUB_IMAGE  (default: <DOCKERHUB_USERNAME>/open-system)
+# Canonical publish destination: hillstreet/open-system
+# The login identity may be a scoped service account with organization push access.
 
 on:
   push:
@@ -38,21 +38,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve image name
+      - name: Resolve canonical image name
         id: image
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
-        run: |
-          set -euo pipefail
-          if [ -n "${DOCKERHUB_IMAGE:-}" ]; then
-            echo "name=${DOCKERHUB_IMAGE}" >> "$GITHUB_OUTPUT"
-          elif [ -n "${DOCKERHUB_USERNAME:-}" ]; then
-            echo "name=${DOCKERHUB_USERNAME}/open-system" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::Set repository secret DOCKERHUB_USERNAME or variable DOCKERHUB_IMAGE"
-            exit 1
-          fi
+        run: echo "name=hillstreet/open-system" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
