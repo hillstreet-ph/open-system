@@ -75,12 +75,13 @@ jobs:
       - id: pick
         run: |
           set -euo pipefail
-          # Forks (e.g. open-system) may have zero release tags. Emit an empty
-          # matrix and let downstream jobs skip instead of failing the schedule.
+          # GitHub rejects a zero-length matrix before job-level `if` guards can
+          # turn it into a clean skip. Use one explicit sentinel entry on forks
+          # with no release tags; the reusable job recognizes and skips it.
           if ! tags="$(scripts/sandbox/pick-release-tags.sh --count '${{ inputs.tag-count || 5 }}' 2>/tmp/pick-tags.err)"; then
             if grep -q 'no release tags found' /tmp/pick-tags.err; then
               echo "No release tags in this repository; skipping install/update E2E matrix."
-              echo 'tags=[]' >> "$GITHUB_OUTPUT"
+              echo 'tags=["__NO_RELEASE__"]' >> "$GITHUB_OUTPUT"
               exit 0
             fi
             cat /tmp/pick-tags.err >&2
@@ -91,14 +92,14 @@ jobs:
 
   # `hermes update` -- the route most users take.
   update:
-    if: needs.pick-releases.outputs.tags != '[]' && (github.event_name != 'workflow_dispatch' || inputs.route != 'installer')
+    if: github.event_name != 'workflow_dispatch' || inputs.route != 'installer'
     needs: pick-releases
     strategy:
       # One release breaking is worth knowing about even if another already
       # failed, so let every leg report.
       fail-fast: false
       matrix:
-        install-ref: ${{ fromJSON(needs.pick-releases.outputs.tags) }}
+        install-ref: ${{ fromJSON(needs.pick-releases.outputs.tags || '["__NO_RELEASE__"]') }}
     uses: ./.github/workflows/install-e2e-run.yml
     with:
       route: update
@@ -107,13 +108,13 @@ jobs:
   # Re-running the curl one-liner over an existing checkout: autostash + pull
   # rather than the updater's own git handling.
   installer:
-    if: needs.pick-releases.outputs.tags != '[]' && (github.event_name != 'workflow_dispatch' || inputs.route != 'update')
+    if: github.event_name != 'workflow_dispatch' || inputs.route != 'update'
     needs: pick-releases
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
-        install-ref: ${{ fromJSON(needs.pick-releases.outputs.tags) }}
+        install-ref: ${{ fromJSON(needs.pick-releases.outputs.tags || '["__NO_RELEASE__"]') }}
     uses: ./.github/workflows/install-e2e-run.yml
     with:
       route: installer

@@ -45,6 +45,10 @@ permissions:
 
 jobs:
   e2e:
+    # Caller uses this sentinel when the repository has no release tags. Keep
+    # the matrix non-empty so GitHub can plan the workflow, then skip here
+    # without pretending an install/update path was exercised.
+    if: inputs.install-ref != '__NO_RELEASE__'
     name: ${{ inputs.route }} from ${{ inputs.install-ref }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
