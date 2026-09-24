@@ -9,8 +9,14 @@ on:
     workflows: ["Open-System Docker Release"]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful Open-System Docker Release run ID to synchronize"
+        required: true
+        type: string
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -20,27 +26,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download immutable artifact metadata
+        if: github.event_name == 'workflow_run' || inputs.source_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: open-system-image-metadata
+          path: /tmp/open-system-image-metadata
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.source_run_id }}
+
       - name: Resolve immutable artifact identity
         id: artifact
         env:
-          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          METADATA_FILE: /tmp/open-system-image-metadata/metadata.json
+          SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
         run: |
           set -euo pipefail
-          image="${DOCKERHUB_IMAGE:-}"
-          if [ -z "$image" ] && [ -n "${DOCKERHUB_USERNAME:-}" ]; then
-            image="${DOCKERHUB_USERNAME}/open-system"
-          fi
-          if [ -z "$image" ] || [ -z "${SOURCE_SHA:-}" ]; then
+          if [ ! -s "$METADATA_FILE" ]; then
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Artifact identity is incomplete; Supabase record skipped."
+            echo "::notice::Immutable artifact metadata is unavailable; Supabase record skipped."
             exit 0
           fi
-          short_sha="${SOURCE_SHA:0:7}"
+          git_sha=$(jq -er '.git_sha' "$METADATA_FILE")
+          image_ref=$(jq -er '.image_ref' "$METADATA_FILE")
+          image_digest=$(jq -er '.image_digest' "$METADATA_FILE")
+          if [ -n "$SOURCE_SHA" ] && [ "$git_sha" != "$SOURCE_SHA" ]; then
+            echo "::error::Artifact metadata SHA does not match the completed Docker workflow."
+            exit 1
+          fi
+          if [[ ! "$image_ref" =~ :sha-${git_sha:0:7}$ ]]; then
+            echo "::error::Artifact metadata image tag does not match the source SHA."
+            exit 1
+          fi
+          if [[ ! "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Artifact metadata does not contain a valid immutable digest."
+            exit 1
+          fi
           echo "available=true" >> "$GITHUB_OUTPUT"
-          echo "git_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
-          echo "image_ref=${image}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "git_sha=$git_sha" >> "$GITHUB_OUTPUT"
+          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
+          echo "image_digest=$image_digest" >> "$GITHUB_OUTPUT"
 
       - name: Record published build artifact
         if: steps.artifact.outputs.available == 'true'
@@ -49,6 +75,7 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           OPEN_SYSTEM_GIT_SHA: ${{ steps.artifact.outputs.git_sha }}
           OPEN_SYSTEM_IMAGE_REF: ${{ steps.artifact.outputs.image_ref }}
+          OPEN_SYSTEM_IMAGE_DIGEST: ${{ steps.artifact.outputs.image_digest }}
           OPEN_SYSTEM_ENV: build-artifact
         run: |
           set -euo pipefail
