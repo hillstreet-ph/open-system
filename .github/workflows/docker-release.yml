@@ -87,6 +87,46 @@ jobs:
           cache-to: type=gha,mode=max,scope=open-system-docker
           provenance: false
 
+      - name: Write immutable artifact metadata
+        env:
+          OPEN_SYSTEM_GIT_SHA: ${{ github.sha }}
+          OPEN_SYSTEM_IMAGE: ${{ steps.image.outputs.name }}
+          OPEN_SYSTEM_IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/open-system-image-metadata
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+
+          git_sha = os.environ["OPEN_SYSTEM_GIT_SHA"]
+          image = os.environ["OPEN_SYSTEM_IMAGE"]
+          digest = os.environ["OPEN_SYSTEM_IMAGE_DIGEST"]
+          if not re.fullmatch(r"[0-9a-f]{40}", git_sha):
+              raise SystemExit("invalid Git SHA")
+          if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+              raise SystemExit("invalid image digest")
+          metadata = {
+              "git_sha": git_sha,
+              "image_ref": f"{image}:sha-{git_sha[:7]}",
+              "image_digest": digest,
+          }
+          pathlib.Path("/tmp/open-system-image-metadata/metadata.json").write_text(
+              json.dumps(metadata, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload immutable artifact metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-system-image-metadata
+          path: /tmp/open-system-image-metadata/metadata.json
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Output digests
         run: |
           echo "### Open-System image published" >> "$GITHUB_STEP_SUMMARY"
