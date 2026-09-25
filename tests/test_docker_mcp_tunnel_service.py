@@ -9,6 +9,7 @@ def test_tunnel_client_is_pinned_and_copied_into_runtime_image():
 
     assert "FROM ghcr.io/openai/tunnel-client:v0.0.15 AS openai_tunnel_client" in dockerfile
     assert "COPY --from=openai_tunnel_client /usr/bin/tunnel-client /usr/local/bin/tunnel-client" in dockerfile
+    assert "chmod 0755 /etc/s6-overlay/s6-rc.d/hermes-mcp-tunnel/run" in dockerfile
 
 
 def test_tunnel_service_is_opt_in_and_uses_hermes_stdio_mcp():
