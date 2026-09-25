@@ -342,6 +342,7 @@ RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
 # /etc/cont-init.d/02-reconcile-profiles (Phase 4 Task 4.0).
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 COPY --from=openai_tunnel_client /usr/bin/tunnel-client /usr/local/bin/tunnel-client
+RUN chmod 0755 /etc/s6-overlay/s6-rc.d/hermes-mcp-tunnel/run
 
 # stage2-hook handles UID/GID remap, volume chown, config seeding,
 # skills sync — all the work the old entrypoint.sh did before
