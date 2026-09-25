@@ -24,22 +24,29 @@ fi
   else shasum -a 256 "$(basename "$DUMP")" > checksums.sha256
   fi
 )
-python3 - << PY
-import json, os, time
-dest=os.environ["DEST"]
-dump=os.path.basename(os.environ["DUMP"])
-m={
-  "schema_version":1,
-  "backup_id":os.path.basename(dest),
-  "created_at":time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-  "type":"postgres",
-  "archive":dump,
-  "encrypted":dump.endswith(".enc"),
-  "verification_status":"UNVERIFIED",
-  "git_sha":os.environ.get("OPEN_SYSTEM_GIT_SHA","unknown"),
+DEST="$DEST" \
+DUMP="$DUMP" \
+OPEN_SYSTEM_GIT_SHA="${OPEN_SYSTEM_GIT_SHA:-unknown}" \
+python3 - <<'PY'
+import json
+import os
+import time
+
+dest = os.environ["DEST"]
+dump = os.path.basename(os.environ["DUMP"])
+manifest = {
+    "schema_version": 1,
+    "backup_id": os.path.basename(dest),
+    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "type": "postgres",
+    "archive": dump,
+    "encrypted": dump.endswith(".enc"),
+    "verification_status": "UNVERIFIED",
+    "git_sha": os.environ["OPEN_SYSTEM_GIT_SHA"],
 }
-open(os.path.join(dest,"manifest.json"),"w").write(json.dumps(m,indent=2)+"\n")
-print(json.dumps(m,indent=2))
+with open(os.path.join(dest, "manifest.json"), "w", encoding="utf-8") as manifest_file:
+    manifest_file.write(json.dumps(manifest, indent=2) + "\n")
+print(json.dumps(manifest, indent=2))
 PY
 if [[ -n "${BACKUP_S3_URI:-}" ]] && command -v aws >/dev/null 2>&1; then
   aws s3 cp --recursive "$DEST" "${BACKUP_S3_URI%/}/db-${TS}/"

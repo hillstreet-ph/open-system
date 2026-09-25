@@ -12,21 +12,31 @@ if [[ "${RESTORE_CONFIRM:-}" != "YES" ]]; then
   echo "Refusing: set RESTORE_CONFIRM=YES to restore into $HERMES_HOME" >&2
   exit 3
 fi
-"$BACKUP_DIR/../backup/verify-backup.sh" "$BACKUP_DIR" 2>/dev/null || scripts/backup/verify-backup.sh "$BACKUP_DIR"
-ARCHIVE_NAME="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["archive"])' "$BACKUP_DIR/manifest.json")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$SCRIPT_DIR/../backup/verify-backup.sh" "$BACKUP_DIR"
+ARCHIVE_NAME="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["archive"])' "$BACKUP_DIR/manifest.json")"
+BACKUP_TYPE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("type", "state"))' "$BACKUP_DIR/manifest.json")"
+if [[ "$BACKUP_TYPE" != "state" ]]; then
+  echo "Refusing to restore backup type '$BACKUP_TYPE' as Hermes state" >&2
+  exit 4
+fi
 ARCHIVE="$BACKUP_DIR/$ARCHIVE_NAME"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 SRC="$ARCHIVE"
+FORMAT="$ARCHIVE_NAME"
 if [[ "$ARCHIVE" == *.enc ]]; then
+  [[ -n "${BACKUP_ENCRYPT_KEY:-}" ]] || { echo "BACKUP_ENCRYPT_KEY required for encrypted archive" >&2; exit 1; }
   openssl enc -d -aes-256-cbc -pbkdf2 -in "$ARCHIVE" -out "$TMP/plain" -pass env:BACKUP_ENCRYPT_KEY
   SRC="$TMP/plain"
+  FORMAT="${ARCHIVE_NAME%.enc}"
 fi
 PARENT="$(dirname "$HERMES_HOME")"
 mkdir -p "$PARENT"
-case "$SRC" in
+case "$FORMAT" in
   *.zst) zstd -d -c "$SRC" | tar -C "$PARENT" -xf - ;;
   *.gz)  gzip -dc "$SRC" | tar -C "$PARENT" -xf - ;;
   *.tar) tar -C "$PARENT" -xf "$SRC" ;;
+  *) echo "unsupported state archive type: $FORMAT" >&2; exit 1 ;;
 esac
 echo "RESTORE_OK into $HERMES_HOME"
