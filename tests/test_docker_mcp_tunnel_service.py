@@ -17,6 +17,8 @@ def test_tunnel_service_is_opt_in_and_uses_hermes_stdio_mcp():
 
     assert "CONTROL_PLANE_API_KEY" in run_script
     assert "CONTROL_PLANE_TUNNEL_ID" in run_script
+    assert "env_value CONTROL_PLANE_API_KEY" in run_script
+    assert "env_value CONTROL_PLANE_TUNNEL_ID" in run_script
     assert 'MCP_COMMAND="${MCP_COMMAND:-hermes mcp serve}"' in run_script
     assert "s6-setuidgid hermes /usr/local/bin/tunnel-client run" in run_script
 
