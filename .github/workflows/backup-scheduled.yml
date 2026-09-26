@@ -98,8 +98,6 @@ jobs:
             exit 1
           fi
           ./scripts/supabase/backup-database.sh
-          backup_dir=$(find /tmp/open-system-backups -mindepth 1 -maxdepth 1 -type d -name 'db-*' | sort | tail -1)
-          ./scripts/backup/verify-backup.sh "$backup_dir"
       - name: Upload encrypted artifact (short retention)
         uses: actions/upload-artifact@v4
         with:

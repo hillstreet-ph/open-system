@@ -49,6 +49,7 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 # 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
 # #4977.
 FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS node_source
+FROM ghcr.io/openai/tunnel-client:v0.0.15 AS openai_tunnel_client
 FROM debian:13.4
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
@@ -340,6 +341,8 @@ RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
 # /run/service/ (tmpfs) and are reconciled on container restart by
 # /etc/cont-init.d/02-reconcile-profiles (Phase 4 Task 4.0).
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
+COPY --from=openai_tunnel_client /usr/bin/tunnel-client /usr/local/bin/tunnel-client
+RUN chmod 0755 /etc/s6-overlay/s6-rc.d/hermes-mcp-tunnel/run
 
 # stage2-hook handles UID/GID remap, volume chown, config seeding,
 # skills sync — all the work the old entrypoint.sh did before

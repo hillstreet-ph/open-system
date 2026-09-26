@@ -32,7 +32,10 @@ case "$FORMAT" in
   *.tar) tar -tf "$SRC" >/dev/null ;;
   *.dump)
     command -v pg_restore >/dev/null 2>&1 || { echo "pg_restore required for PostgreSQL custom dumps" >&2; exit 1; }
-    pg_restore --list "$SRC" >/dev/null
+    # Reading only the table of contents does not exercise table-data blocks.
+    # Render the complete archive to a discard file so truncated/corrupt data
+    # fails verification before the manifest can be marked VERIFIED.
+    pg_restore --exit-on-error --file=/dev/null "$SRC"
     ;;
   *) echo "unknown archive type: $FORMAT" >&2; exit 1 ;;
 esac
