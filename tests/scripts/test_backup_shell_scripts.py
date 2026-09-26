@@ -57,13 +57,32 @@ def test_state_backup_verifies_and_restores(tmp_path: Path, encrypted: bool) -> 
     hermes_home.mkdir(parents=True)
     (hermes_home / "state.txt").write_text("synthetic-state\n", encoding="utf-8")
     output = tmp_path / "backups"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    upload_marker = tmp_path / "aws-uploaded"
+    aws = bin_dir / "aws"
+    aws.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "[[ \"$1\" == 's3' && \"$2\" == 'cp' && \"$3\" == '--recursive' ]]\n"
+        "python3 - \"$4/manifest.json\" <<'PY'\n"
+        "import json, sys\n"
+        "assert json.load(open(sys.argv[1], encoding='utf-8'))['verification_status'] == 'VERIFIED'\n"
+        "PY\n"
+        ": > \"$AWS_UPLOAD_MARKER\"\n",
+        encoding="utf-8",
+    )
+    aws.chmod(aws.stat().st_mode | stat.S_IXUSR)
     env = clean_backup_environment()
     env.update(
         {
+            "PATH": f"{bin_dir}:{env['PATH']}",
             "HERMES_HOME": str(hermes_home),
             "BACKUP_OUT_DIR": str(output),
             "OPEN_SYSTEM_GIT_SHA": "test-sha",
             "OPEN_SYSTEM_IMAGE_DIGEST": "sha256:" + "a" * 64,
+            "BACKUP_S3_URI": "s3://synthetic-test/backups",
+            "AWS_UPLOAD_MARKER": str(upload_marker),
         }
     )
     if encrypted:
@@ -77,12 +96,25 @@ def test_state_backup_verifies_and_restores(tmp_path: Path, encrypted: bool) -> 
     assert manifest["git_sha"] == "test-sha"
     assert manifest["verification_status"] == "VERIFIED"
     assert manifest["encrypted"] is encrypted
+    assert upload_marker.exists()
 
     restore_parent = tmp_path / "restore"
     restore_home = restore_parent / "data"
     restore_env = env | {"HERMES_HOME": str(restore_home), "RESTORE_CONFIRM": "YES"}
     run_script("scripts/restore/restore-state.sh", str(backup_dir), env=restore_env)
     assert (restore_home / "state.txt").read_text(encoding="utf-8") == "synthetic-state\n"
+
+
+def test_scheduled_database_backup_requires_explicit_enablement() -> None:
+    workflow = (ROOT / ".github/workflows/backup-scheduled.yml").read_text(encoding="utf-8")
+    requirements = (ROOT / "deploy/docs/GITHUB_SECRETS_REQUIREMENTS.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "vars.BACKUP_DATABASE_ENABLED == 'true'" in workflow
+    assert "secrets.BACKUP_ENCRYPT_KEY" in workflow
+    assert "BACKUP_DATABASE_ENABLED" in requirements
+    assert "BACKUP_ENCRYPT_KEY" in requirements
 
 
 @pytest.mark.parametrize("encrypted", [False, True])

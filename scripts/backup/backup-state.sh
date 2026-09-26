@@ -88,6 +88,9 @@ with open(os.path.join(dest, "manifest.json"), "w", encoding="utf-8") as manifes
 print(json.dumps(manifest, indent=2))
 PY
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$SCRIPT_DIR/verify-backup.sh" "$DEST"
+
 if [[ -n "${BACKUP_S3_URI:-}" ]] && command -v aws >/dev/null 2>&1; then
   aws s3 cp --recursive "$DEST" "${BACKUP_S3_URI%/}/backup-${TS}/"
   echo "uploaded to ${BACKUP_S3_URI%/}/backup-${TS}/"

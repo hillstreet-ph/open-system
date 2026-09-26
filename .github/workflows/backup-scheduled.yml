@@ -33,7 +33,7 @@ jobs:
             echo "### Open-System automated backup"
             echo "- Volume state: run \`scripts/backup/backup-state.sh\` on host/Zeabur with HERMES_HOME=/opt/data"
             echo "- Verify: \`scripts/backup/verify-backup.sh\`"
-            echo "- Database: scheduled encrypted \`pg_dump\` job below"
+            echo "- Database: encrypted \`pg_dump\` runs on schedule only when the BACKUP_DATABASE_ENABLED repository variable is true"
             echo "- Offsite: set BACKUP_S3_URI + AWS credentials"
             echo "- Encryption: BACKUP_ENCRYPT_KEY is mandatory in GitHub Actions"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -72,7 +72,7 @@ jobs:
           fi
 
   database-backup:
-    if: github.repository == 'hillstreet-ph/open-system' && (github.event_name == 'schedule' || inputs.run_db_backup == true)
+    if: github.repository == 'hillstreet-ph/open-system' && ((github.event_name == 'schedule' && vars.BACKUP_DATABASE_ENABLED == 'true') || (github.event_name == 'workflow_dispatch' && inputs.run_db_backup == true))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

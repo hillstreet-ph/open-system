@@ -20,6 +20,18 @@
 | OPENROUTER_API_KEY | Configured | AI model routing |
 | BACKUP_S3_URI | Configured | Backup storage |
 
+**Required before enabling scheduled database backups:**
+
+| Setting | Type | Purpose |
+|---------|------|---------|
+| BACKUP_ENCRYPT_KEY | Secret | Encrypt database archives before artifact or offsite storage; do not enable the schedule until configured |
+| BACKUP_DATABASE_ENABLED | Repository variable | Set to literal `true` only after `BACKUP_ENCRYPT_KEY`, `DATABASE_URL`, and backup storage access are validated |
+
+The scheduled database-backup job is fail-closed and remains gated while
+`BACKUP_DATABASE_ENABLED` is unset or not `true`. Manual dispatch remains available for
+an explicitly requested validation and still refuses to create a plaintext database
+artifact when `BACKUP_ENCRYPT_KEY` is missing.
+
 **Environments (3):**
 - `gh-image`
 - `Hermes Agent / production`
