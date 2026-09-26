@@ -18,7 +18,6 @@ if [[ ! -d "$HERMES_HOME" ]]; then
   exit 1
 fi
 
-# Exclude ephemeral caches and large regeneratable browser downloads
 EXCLUDE=(
   --exclude='**/__pycache__'
   --exclude='**/*.pyc'
@@ -61,24 +60,36 @@ fi
   fi
 )
 
-python3 - << PY
-import json, os, time
+DEST="$DEST" \
+ARCHIVE="$ARCHIVE" \
+HERMES_HOME="$HERMES_HOME" \
+GIT_SHA="$GIT_SHA" \
+IMAGE_DIGEST="$IMAGE_DIGEST" \
+python3 - <<'PY'
+import json
+import os
+import time
+
 dest = os.environ["DEST"]
 archive = os.path.basename(os.environ["ARCHIVE"])
 manifest = {
-  "schema_version": 1,
-  "backup_id": os.path.basename(dest),
-  "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-  "hermes_home": os.environ.get("HERMES_HOME", "/opt/data"),
-  "git_sha": os.environ.get("GIT_SHA", "unknown"),
-  "image_digest": os.environ.get("IMAGE_DIGEST", "unknown"),
-  "archive": archive,
-  "encrypted": archive.endswith(".enc"),
-  "verification_status": "UNVERIFIED",
+    "schema_version": 1,
+    "backup_id": os.path.basename(dest),
+    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "hermes_home": os.environ["HERMES_HOME"],
+    "git_sha": os.environ["GIT_SHA"],
+    "image_digest": os.environ["IMAGE_DIGEST"],
+    "archive": archive,
+    "encrypted": archive.endswith(".enc"),
+    "verification_status": "UNVERIFIED",
 }
-open(os.path.join(dest, "manifest.json"), "w").write(json.dumps(manifest, indent=2) + "\n")
+with open(os.path.join(dest, "manifest.json"), "w", encoding="utf-8") as manifest_file:
+    manifest_file.write(json.dumps(manifest, indent=2) + "\n")
 print(json.dumps(manifest, indent=2))
 PY
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$SCRIPT_DIR/verify-backup.sh" "$DEST"
 
 if [[ -n "${BACKUP_S3_URI:-}" ]] && command -v aws >/dev/null 2>&1; then
   aws s3 cp --recursive "$DEST" "${BACKUP_S3_URI%/}/backup-${TS}/"

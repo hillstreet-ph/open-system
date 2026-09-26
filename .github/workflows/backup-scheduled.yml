@@ -1,8 +1,8 @@
 name: Scheduled backup (Open-System)
 
-# Runs checklist + optional remote jobs when secrets are configured.
-# Never prints secret values. Does not access Zeabur volume directly from GHA
-# unless BACKUP_SSH_* secrets are provided by the operator.
+# Runs a real encrypted database backup on schedule or explicit dispatch.
+# Volume backup still requires host/Zeabur access because GitHub Actions cannot
+# reach the mounted /opt/data volume without operator-provided SSH access.
 
 on:
   schedule:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       run_db_backup:
-        description: "Attempt Supabase pg_dump if DATABASE_URL secret exists"
+        description: "Attempt encrypted Supabase pg_dump"
         type: boolean
         default: false
       record_sync_event:
@@ -33,9 +33,9 @@ jobs:
             echo "### Open-System automated backup"
             echo "- Volume state: run \`scripts/backup/backup-state.sh\` on host/Zeabur with HERMES_HOME=/opt/data"
             echo "- Verify: \`scripts/backup/verify-backup.sh\`"
-            echo "- Database: \`scripts/supabase/backup-database.sh\` with DATABASE_URL"
+            echo "- Database: encrypted \`pg_dump\` runs on schedule only when the BACKUP_DATABASE_ENABLED repository variable is true"
             echo "- Offsite: set BACKUP_S3_URI + AWS credentials"
-            echo "- Encrypt: set BACKUP_ENCRYPT_KEY"
+            echo "- Encryption: BACKUP_ENCRYPT_KEY is mandatory in GitHub Actions"
           } >> "$GITHUB_STEP_SUMMARY"
 
   supabase-sync-event:
@@ -72,13 +72,13 @@ jobs:
           fi
 
   database-backup:
-    if: github.repository == 'hillstreet-ph/open-system' && github.event_name == 'workflow_dispatch' && inputs.run_db_backup == true
+    if: github.repository == 'hillstreet-ph/open-system' && ((github.event_name == 'schedule' && vars.BACKUP_DATABASE_ENABLED == 'true') || (github.event_name == 'workflow_dispatch' && inputs.run_db_backup == true))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install pg_dump
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
-      - name: Dump database
+      - name: Dump encrypted database
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BACKUP_ENCRYPT_KEY: ${{ secrets.BACKUP_ENCRYPT_KEY }}
@@ -93,10 +93,15 @@ jobs:
             echo "DATABASE_URL secret missing; cannot dump."
             exit 1
           fi
+          if [ -z "${BACKUP_ENCRYPT_KEY:-}" ]; then
+            echo "BACKUP_ENCRYPT_KEY secret missing; refusing to create a GitHub artifact containing a plaintext database dump."
+            exit 1
+          fi
           ./scripts/supabase/backup-database.sh
-      - name: Upload artifact (short retention)
+      - name: Upload encrypted artifact (short retention)
         uses: actions/upload-artifact@v4
         with:
           name: db-backup
           path: /tmp/open-system-backups/
+          if-no-files-found: error
           retention-days: 7
