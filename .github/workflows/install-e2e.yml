@@ -78,7 +78,7 @@ jobs:
           # GitHub rejects a zero-length matrix before job-level `if` guards can
           # turn it into a clean skip. Use one explicit sentinel entry on forks
           # with no release tags; the reusable job recognizes and skips it.
-          if ! tags="$(scripts/sandbox/pick-release-tags.sh --count '${{ inputs.tag-count || 5 }}' 2>/tmp/pick-tags.err)"; then
+          if ! tags="$(scripts/sandbox/pick-release-tags.sh --count '${{ inputs['tag-count'] || 5 }}' 2>/tmp/pick-tags.err)"; then
             if grep -q 'no release tags found' /tmp/pick-tags.err; then
               echo "No release tags in this repository; skipping install/update E2E matrix."
               echo 'tags=["__NO_RELEASE__"]' >> "$GITHUB_OUTPUT"
