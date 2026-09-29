@@ -1,0 +1,22 @@
+version: 1
+project: replace-me
+owners: []
+commands:
+  build: replace-me
+  test: replace-me
+  migrate: replace-me
+  rollback: replace-me
+artifact:
+  dockerhub_repository: replace-me
+edge:
+  cloudflare_account: replace-me
+  resources: []
+data:
+  supabase_project_alias: replace-me
+observability:
+  sentry_project: replace-me
+runtime:
+  zeabur_project: replace-me
+  zeabur_service: replace-me
+  health_path: /health
+domains: []
