@@ -1,0 +1,1 @@
+Audit all supplied or connected influencer resources against the canonical workbook `Influencer Master List Contacts`. Do not modify anything. Report missing influencers, duplicates, cross-tab misclassification, malformed links, missing country/platform information, conflicting prices/statuses, and records that are not yet represented in the master list.
