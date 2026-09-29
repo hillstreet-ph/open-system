@@ -1,6 +1,10 @@
 ---
 name: business-english-conversation-helper
-description: Use when the user supplies conversation chats, message history, or a draft reply and wants a professional English response that accounts for the full supplied conversation and the other person's persona.
+description: "Draft clear professional replies from supplied conversations."
+version: 0.1.0
+author: HillStreet Information Technology Services
+license: MIT
+platforms: [linux, macos, windows]
 ---
 
 # Business English Conversation Helper
