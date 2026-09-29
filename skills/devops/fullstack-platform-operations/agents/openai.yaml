@@ -1,0 +1,14 @@
+interface:
+  display_name: Full-Stack Platform Operations
+  short_description: Audit, configure, validate, and deploy platforms safely
+  default_prompt: Audit and operate this project's GitHub, Docker Hub, Cloudflare,
+    Supabase, Sentry, and Zeabur deployment pipeline.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true
