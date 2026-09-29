@@ -1,6 +1,10 @@
 ---
 name: open-influencer-organize
-description: Use when consolidating influencer/contact lists from multiple files, sheets, documents, or connected resources into one deduplicated master spreadsheet organized by platform and country.
+description: "Consolidate influencer contacts into a clean master list."
+version: 0.1.0
+author: HillStreet Information Technology Services
+license: MIT
+platforms: [linux, macos, windows]
 ---
 
 # Open Influencer Organize
