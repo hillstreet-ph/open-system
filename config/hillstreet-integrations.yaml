@@ -1,0 +1,133 @@
+version: 1
+system: open-system
+environment: production
+control_plane:
+  provider: open-connect
+  public_domain: open-connect.site
+  mcp_endpoint: https://open-connect.site/mcp
+  model_endpoint: https://open-connect.site/v1
+  required_scopes:
+    - openid
+    - mcp:connect
+    - resources:read
+    - models:read
+    - models:invoke
+execution_plane:
+  provider: open-system
+  dashboard: https://open-system.space
+  api_origin: https://api.open-system.space
+  mcp_exposure: delegated-via-open-connect
+  runtime: zeabur
+telegram_plane:
+  provider: open-tgate
+  database_project: open-operations
+  mode: multi-bot-router
+  direct_hermes_bot_mode: disabled
+  route_key: organization_id:workspace_id:chat_id:topic_id
+  require_allowlist: true
+  require_topic_id: true
+  require_verified_sender: true
+  credentials:
+    source: provider-secret-store
+    values_in_repository: forbidden
+organizations:
+  - slug: hillstreet
+    classification: internal
+    priorities:
+      - development
+      - business-operations
+      - agency-services
+      - data-engineering
+      - personal-owner-only
+    telegram_workspace: HillStreet Workspace
+    knowledge_visibility:
+      - internal
+      - restricted
+      - owner-only
+  - slug: kobeplay
+    classification: client
+    priorities:
+      - business-operations
+      - development
+      - influencer-marketing
+      - agent-marketing
+      - reporting
+    telegram_workspace: KobePlay Workspace
+    knowledge_visibility:
+      - client-safe
+      - internal-agency
+connectors:
+  github:
+    primary: native
+    source_of_truth: true
+    mode: read-write
+  supabase:
+    primary: native
+    projects:
+      open-platform: huadtiuuoiriqrjpjxhr
+      open-operations: hoseohvgoiarxluxqwqv
+  notion:
+    primary: native
+    purpose: governance-sops-reviewed-knowledge
+  airtable:
+    primary: native
+    purpose: structured-operations
+  google_drive:
+    primary: native
+    purpose: files-source-references
+  google_sheets:
+    primary: native
+    purpose: registers-and-coordination
+  telegram:
+    primary: open-tgate
+    fallback: none
+  composio:
+    role: managed-oauth-fallback
+  slimtools:
+    role: capability-gap-fallback
+  pipedream:
+    role: legacy-workflow-fallback
+memory:
+  tiers:
+    - session
+    - project
+    - reviewed-organization
+  promotion_requires_review: true
+  secret_values_forbidden: true
+approvals:
+  required_for:
+    - production-deployment
+    - database-migration
+    - credential-change
+    - finance-action
+    - staff-access-change
+    - client-publication
+    - paid-compute
+    - destructive-action
+routing:
+  domains:
+    development:
+      agent: dev-supervisor
+      organization_access: [hillstreet, kobeplay]
+    business-operations:
+      agent: operations-supervisor
+      organization_access: [hillstreet, kobeplay]
+    agency-services:
+      agent: agency-operations
+      organization_access: [hillstreet]
+    data-engineering:
+      agent: data-engineering
+      organization_access: [hillstreet]
+    personal-owner-only:
+      agent: personal-operator
+      organization_access: [hillstreet]
+      approval_required: true
+    influencer-marketing:
+      agent: influencer-operations
+      organization_access: [kobeplay]
+    agent-marketing:
+      agent: agent-marketing
+      organization_access: [kobeplay]
+evidence:
+  issue: https://github.com/hillstreet-ph/open-system/issues/41
+  secret_values_logged: false
