@@ -1,0 +1,1 @@
+Deduplicate `Influencer Master List Contacts`. Compare normalized social profile URLs/usernames first, then email, Telegram, and strong combined identity evidence. Never merge by name alone. Merge complementary fields, preserve the strongest evidence, flag conflicts, and return a merge/review audit.
