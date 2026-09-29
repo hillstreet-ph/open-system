@@ -1,6 +1,6 @@
 ---
 name: business-english-conversation-helper
-description: "Draft clear professional replies from supplied conversations."
+description: "Draft professional replies from supplied conversations."
 version: 0.1.0
 author: HillStreet Information Technology Services
 license: MIT
