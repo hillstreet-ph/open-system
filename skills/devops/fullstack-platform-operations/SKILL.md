@@ -5,6 +5,7 @@ version: 0.1.0
 author: HillStreet Information Technology Services
 license: MIT
 platforms: [linux, macos, windows]
+tags: [devops, platform-operations, ci-cd, cloud, security]
 ---
 
 # Full-Stack Platform Operations

@@ -5,6 +5,7 @@ version: 0.1.0
 author: HillStreet Information Technology Services
 license: MIT
 platforms: [linux, macos, windows]
+tags: [influencer-marketing, contacts, spreadsheets, social-media]
 ---
 
 # Open Influencer Organize
