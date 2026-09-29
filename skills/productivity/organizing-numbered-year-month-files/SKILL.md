@@ -1,6 +1,10 @@
 ---
 name: organizing-numbered-year-month-files
-description: Use when organizing files into numbered categories that require a consistent year, January-to-December, and file-type folder hierarchy, especially when existing folders must be reused and duplicates avoided.
+description: "Organize files by category, year, month, and file type."
+version: 0.1.0
+author: HillStreet Information Technology Services
+license: MIT
+platforms: [linux, macos, windows]
 ---
 
 # Organizing Numbered Year/Month Files
