@@ -76,3 +76,21 @@ digest, restored-volume staging, and verified SQLite-aware recovery
 evidence remain mandatory. Existing shell tar verification alone does
 not prove SQLite consistency. Preserve the current image and volume until
 all gates pass; never reset runtime state to complete an upgrade.
+
+
+### Security follow-up
+
+The candidate's npm audit findings were repaired with exact compatible
+Electron, DOMPurify, brace-expansion, js-yaml and undici pins plus patched
+transitive dependencies. The existing Dependabot #40 ip-address 10.7.2
+change is adopted and its commit retained as a merge parent.
+`npm@11.17.0 ci --ignore-scripts` passed with the repository's existing
+release-age policy, and the final lockfile audit reports zero vulnerabilities.
+Dashboard and TUI production builds passed. Independent follow-up review
+found no blocking code issues; exact-head remote checks still apply.
+
+The initial CI classifier exhausted its one-minute budget on this large
+release reconciliation. Only its timeout is increased to five minutes;
+no check or gate is removed. The initial Docker staging smoke succeeded.
+The repository's `ci-reviewed` label requires human maintainer review of
+workflow/MCP changes; automation must not self-apply that approval.
