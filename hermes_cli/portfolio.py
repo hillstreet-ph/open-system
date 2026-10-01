@@ -59,7 +59,8 @@ def _validate_routing(project: str, required_profiles: list[str]) -> Path:
         raise ValueError("Board requires an existing absolute default_workdir")
     path = Path(workdir).resolve()
     def git(*args: str) -> str:
-        result = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, timeout=10)
+        result = subprocess.run(["git", "-C", str(path), *args], capture_output=True,
+                                text=True, encoding="utf-8", errors="replace", timeout=10)
         if result.returncode:
             raise ValueError("Board workdir must be a project Git repository")
         return result.stdout.strip()
@@ -126,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     if any(fields) and not all(fields):
         parser.error("Goal intake requires --project, --category, --goal-file and --request-id")
     try:
-        result = (intake(args.project, args.category, args.goal_file.read_text(),
+        result = (intake(args.project, args.category, args.goal_file.read_text(encoding="utf-8"),
                          args.request_id, apply=args.apply) if all(fields)
                   else onboard(apply=args.apply))
     except (ValueError, OSError) as exc:
