@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 
+import { resolveReadyTimeoutMs } from './remote-lifecycle'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -19,29 +20,187 @@ function powerShellCommand(script) {
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedPowerShell(script)}`
 }
 
+// Windows OpenSSH may serialize PowerShell's progress stream as
+// "#< CLIXML <Objs ...>...</Objs>" blocks into the captured stdout of ANY
+// PowerShell exec on the connection (module auto-load / Add-Type cold-start
+// racing the read) — not just the platform probe. Every stdout-parsing call
+// shares this normalizer: strip a leading BOM, drop every CLIXML block
+// (before, after, or on the same line as the payload), and keep only the
+// meaningful lines.
+function stripPowerShellNoise(stdout) {
+  return String(stdout || '')
+    .replace(/^\uFEFF/, '')
+    .replace(/#< CLIXML[\s\S]*?<\/Objs>/g, '')
+    .split(/\r?\n/)
+    .filter(line => line.trim() && !line.trimStart().startsWith('#< CLIXML'))
+}
+
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
   const script = [
+    // Module auto-load / cold-start progress records get serialized by Windows
+    // OpenSSH as "#< CLIXML <Objs S=\"progress\">..." into the same stdout the
+    // probe parses; silence the progress stream before anything can emit it.
+    '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
+    'function Assert-NoReparse([string]$candidate,[bool]$allowMissing=$false){',
+    'if([string]::IsNullOrWhiteSpace($candidate)){return}',
+    '$current=[IO.Path]::GetFullPath($candidate);$first=$true',
+    'while($true){',
+    'try{$item=Get-Item -LiteralPath $current -Force -ErrorAction Stop}catch [Management.Automation.ItemNotFoundException]{if(-not $allowMissing -and $first){throw "Path was not found: $candidate"};$parent=[IO.Path]::GetDirectoryName($current);if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false;continue}',
+    'if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw "Path contains a link or reparse point: $current"}',
+    '$parent=$item.Parent.FullName;if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false',
+    '}',
+    '}',
     `$explicit=${explicit}`,
+    'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $false}',
+    // HERMES_HOME is only trusted when it names a directory on the REMOTE: a stale User-scope
+    // value (older install.ps1 persisted one) or a client path leaked over SSH otherwise fails
+    // assertSafeRemoteHome as "Unsafe remote Hermes home" (#118988).
     '$hermesHome=$env:HERMES_HOME',
-    'if(-not $hermesHome){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
+    'if(-not $hermesHome -or -not (Test-Path -LiteralPath $hermesHome -PathType Container)){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
+    'Assert-NoReparse $hermesHome $true',
+    '$candidate=[IO.Path]::Combine($hermesHome, "hermes-agent\\venv\\Scripts\\hermes.exe")',
+    '$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe")',
+    'Assert-NoReparse $candidate $true',
+    'Assert-NoReparse $candidatePython $true',
+    '$profileCandidate=[IO.Path]::Combine($HOME, "hermes-agent\\.venv\\Scripts\\hermes.exe")',
+    '$profileCandidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($profileCandidate), "python.exe")',
+    'Assert-NoReparse $profileCandidate $true',
+    'Assert-NoReparse $profileCandidatePython $true',
+    '$fallbackHomeCandidate=Join-Path $hermesHome "hermes-agent\\venv\\Scripts\\hermes.exe"',
+    '$fallbackProfileCandidate=Join-Path $HOME "hermes-agent\\.venv\\Scripts\\hermes.exe"',
     '$candidates=@()',
     'if($explicit){$candidates+=$explicit}',
     '$cmd=Get-Command hermes.exe -ErrorAction SilentlyContinue',
-    'if($cmd){$candidates+=$cmd.Source}',
-    '$candidates+=(Join-Path $hermesHome "hermes-agent\\venv\\Scripts\\hermes.exe")',
-    '$candidates+=(Join-Path $HOME "hermes-agent\\.venv\\Scripts\\hermes.exe")',
-    '$hermes=$candidates|Where-Object{Test-Path -LiteralPath $_ -PathType Leaf}|Select-Object -First 1',
+    'if($cmd){Assert-NoReparse $cmd.Source $true;$cmdPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($cmd.Source), "python.exe");Assert-NoReparse $cmdPython $true;$candidates+=$cmd.Source}',
+    '$candidates+=$fallbackHomeCandidate',
+    '$candidates+=$fallbackProfileCandidate',
+    '$hermes=$null',
+    'foreach($candidate in $candidates){Assert-NoReparse $candidate $true;$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe");Assert-NoReparse $candidatePython $true;try{$item=Get-Item -LiteralPath $candidate -Force -ErrorAction Stop;if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and -not $item.PSIsContainer){$hermes=$item.FullName;break}}catch [Management.Automation.ItemNotFoundException]{continue}}',
     'if(-not $hermes){throw "Hermes is not installed on the remote Windows host."}',
+    'Assert-NoReparse $hermes $false',
     'if($explicit -and $hermes -ne $explicit){throw "The configured Hermes path is not an executable file."}',
-    '$python=Join-Path (Split-Path $hermes) "python.exe"',
-    'if(-not (Test-Path -LiteralPath $python -PathType Leaf)){throw "The remote Hermes Python runtime was not found."}',
+    '$python=[IO.Path]::Combine([IO.Path]::GetDirectoryName($hermes), "python.exe")',
+    'Assert-NoReparse $python $false',
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join(';')
 
-  return JSON.parse((await ssh.exec(powerShellCommand(script))).trim())
+  // Windows OpenSSH may serialize PowerShell's progress stream as
+  // "#< CLIXML <Objs ...>...</Objs>" blocks into the same stdout the
+  // probe parses, ahead of, after, or on the same line as the probe JSON
+  // (module auto-load racing the exec read). stripPowerShellNoise drops every
+  // block; the JSON is the last meaningful line.
+  const lines = stripPowerShellNoise(await ssh.exec(powerShellCommand(script)))
+
+  const parsed = JSON.parse(lines[lines.length - 1] || 'null')
+
+  if (!parsed?.os || !parsed?.arch) {
+    throw new Error(`Windows probe did not return the expected platform JSON: ${String(lines[lines.length - 1] ?? '').slice(0, 200)}`)
+  }
+
+  return parsed
+}
+
+function windowsUpdateMarkerProbeCommand(hermesHome) {
+  const script = [
+    '$ProgressPreference="SilentlyContinue"',
+    '$ErrorActionPreference="Stop"',
+    `Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class HermesMarkerNoFollow {
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  private static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+  public static FileStream OpenRead(string name) {
+    var handle=CreateFile(name, 0x80000000, 0x00000007, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero);
+    if(handle.IsInvalid) Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error());
+    return new FileStream(handle, FileAccess.Read);
+  }
+}
+'@
+`,
+    'function Assert-NoReparse([string]$candidate,[bool]$allowMissing=$false){',
+    'if([string]::IsNullOrWhiteSpace($candidate)){return}',
+    '$current=[IO.Path]::GetFullPath($candidate);$first=$true',
+    'while($true){',
+    'try{$item=Get-Item -LiteralPath $current -Force -ErrorAction Stop}catch [Management.Automation.ItemNotFoundException]{if(-not $allowMissing -and $first){throw "Path was not found: $candidate"};$parent=[IO.Path]::GetDirectoryName($current);if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false;continue}',
+    'if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw "Path contains a link or reparse point: $current"}',
+    '$parent=$item.Parent.FullName;if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false',
+    '}',
+    '}',
+    `$hermesHome=${psLiteral(hermesHome)}`,
+    '$installRoot=$hermesHome',
+    '$parent=Split-Path -Parent $hermesHome',
+    'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',
+    '$marker=Join-Path $installRoot ".hermes-update-in-progress"',
+    '$result="UNCERTAIN"',
+    '$stream=$null;$memory=$null',
+    'try{',
+    'Assert-NoReparse $marker $true',
+    'if(-not (Test-Path -LiteralPath $marker -PathType Leaf)){$result="CLEAR"}else{$stream=[HermesMarkerNoFollow]::OpenRead($marker)',
+    'Assert-NoReparse $marker $false',
+    '$memory=New-Object IO.MemoryStream;$stream.CopyTo($memory);$bytes=$memory.ToArray()',
+    'if($bytes.Length -le 256){',
+    '$utf8=[Text.UTF8Encoding]::new($false,$true)',
+    '$text=$utf8.GetString($bytes)',
+    "$match=[regex]::Match($text,'\\A([1-9][0-9]*)\\r?\\n([0-9]+)(?:\\r?\\n)?\\z')",
+    '[uint32]$ownerPid=0',
+    '[uint64]$lease=0',
+    '$valid=$match.Success',
+    'if($valid){$valid=[uint32]::TryParse($match.Groups[1].Value,[Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$ownerPid)}',
+    'if($valid){$valid=[uint64]::TryParse($match.Groups[2].Value,[Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$lease)}',
+    'if($valid -and $lease -le 9007199254740991){',
+    'try{',
+    '$process=[Diagnostics.Process]::GetProcessById([int]$ownerPid)',
+    'try{if($process.HasExited){$result="CLEAR"}else{$result="LIVE:"+[string]$ownerPid}}finally{$process.Dispose()}',
+    '}catch [ArgumentException]{$result="CLEAR"} catch{$result="UNCERTAIN"}',
+    '}',
+    '}',
+    '}}catch [IO.FileNotFoundException]{$result="CLEAR"}catch{$result="UNCERTAIN"}finally{if($memory){$memory.Dispose()};if($stream){$stream.Dispose()}}',
+    'Write-Output $result'
+  ].join(';')
+
+  return powerShellCommand(script)
+}
+
+/**
+ * Fail-closed install marker gate for a fresh/relaunched Desktop process.
+ * This uses only PowerShell/.NET and therefore never imports the remote
+ * checkout while an updater may be replacing it.
+ */
+async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
+  let observation = ''
+
+  try {
+    // Same stdout channel as the probe: a CLIXML progress block after the
+    // final `Write-Output $result` would otherwise win the .pop() and turn a
+    // CLEAR gate into a fail-closed 'update-in-progress' verdict.
+    observation = stripPowerShellNoise(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome))).pop() || ''
+  } catch (cause) {
+    const error: any = new Error('Could not prove that the remote Hermes install is clear for SSH startup.')
+    error.kind = 'update-in-progress'
+    error.cause = cause
+    throw error
+  }
+
+  if (observation === 'CLEAR') {
+    return
+  }
+
+  const live = /^LIVE:([1-9][0-9]*)$/.exec(observation)
+
+  const error: any = new Error(
+    live
+      ? `Remote Hermes update process ${live[1]} is still running; SSH startup is paused.`
+      : 'The remote Hermes update marker is unreadable or malformed; refusing SSH startup.'
+  )
+
+  error.kind = 'update-in-progress'
+  throw error
 }
 
 const TRANSPORT_KINDS = new Set([
@@ -74,6 +233,8 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
       throw cause
     }
 
+    const kind = cause?.kind
+
     // detail is remote-controlled output headed for the UI: redact + strip control chars.
     const detail = redactSecrets(String(cause?.message || cause || ''))
       // eslint-disable-next-line no-control-regex -- deliberately strip control chars from remote output
@@ -81,10 +242,10 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
       .trim()
 
     const error: any = new Error(
-      `The remote operating system is not supported by Desktop SSH.${detail ? ` (probe: ${detail.slice(0, 300)})` : ''}`
+      `${kind ? 'The Windows remote probe failed.' : 'The remote operating system is not supported by Desktop SSH.'}${detail ? ` (probe: ${detail.slice(0, 300)})` : ''}`
     )
 
-    error.kind = 'unsupported-platform'
+    error.kind = kind || 'unsupported-platform'
     error.cause = cause
     throw error
   }
@@ -94,6 +255,7 @@ function helperCommand(runtime, operation, args = []) {
   const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation, ...args]
 
   const script = [
+    '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
     `& ${argv.map(psLiteral).join(' ')}`,
     'if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}'
@@ -105,16 +267,71 @@ function helperCommand(runtime, operation, args = []) {
 async function helper(ssh, runtime, operation, args = [], stdinData?) {
   const output = await ssh.exec(helperCommand(runtime, operation, args), stdinData == null ? {} : { stdinData })
 
-  const lines = String(output || '')
-    .replace(/^\uFEFF/, '')
-    .trim()
-    .split(/\r?\n/)
-    .filter(Boolean)
+  const lines = stripPowerShellNoise(output)
 
   const parsed = JSON.parse(lines[lines.length - 1] || 'null')
 
   if (parsed?.error) {
     throw new Error(parsed.error)
+  }
+
+  return parsed
+}
+
+function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
+  const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', 'spawn']
+  const helper = operation => [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation]
+
+  const script = [
+    '$ProgressPreference="SilentlyContinue"',
+    '$ErrorActionPreference="Stop"',
+    `$hermesHome=${psLiteral(runtime.hermesHome)}`,
+    '$installRoot=$hermesHome',
+    '$parent=Split-Path -Parent $hermesHome',
+    'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',
+    '$marker=Join-Path $installRoot ".hermes-update-in-progress"',
+    '$mutexPath=$marker+".mutex"',
+    '$mutex=[IO.File]::Open($mutexPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)',
+    'try{',
+    '  $mutex.Lock(0,1)',
+    '  if([IO.File]::Exists($marker)){throw "remote update marker is present"}',
+    reservation.ownershipId
+      ? `  $existingLines=@(& ${helper('read-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)}); $existingExit=$LASTEXITCODE; ` +
+        '  if($existingExit -eq 0 -and $existingLines.Count -gt 0){try{$existing=$existingLines[-1]|ConvertFrom-Json}catch{$existing=$null}; ' +
+        'if($existing -and [int]$existing.pid -gt 0){try{$p=[Diagnostics.Process]::GetProcessById([int]$existing.pid); ' +
+        'if(-not $p.HasExited){[ordered]@{existing=$true}|ConvertTo-Json -Compress;exit 0}}catch{}finally{if($p){$p.Dispose()}}}; ' +
+        `& ${helper('remove-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)}|Out-Null}`
+      : '',
+    reservation.ownershipId
+      ? `  $spawnLines=@(& ${argv.map(psLiteral).join(' ')}); $spawnExit=$LASTEXITCODE`
+      : `  & ${argv.map(psLiteral).join(' ')}`,
+    reservation.ownershipId
+      ? '  if($spawnExit -ne 0){exit $spawnExit}'
+      : '  if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}',
+    reservation.ownershipId
+      ? `  $spawned=$spawnLines[-1]|ConvertFrom-Json; $lock=[ordered]@{schemaVersion=2;protocolVersion=1;ownershipId=${psLiteral(reservation.ownershipId)};spawnNonce=${psLiteral(reservation.spawnNonce)};pid=[int]$spawned.pid;creationTimeNs=[string]$spawned.creationTimeNs;port=0;profile=${psLiteral(reservation.profile)};hermesPath=${psLiteral(reservation.hermesPath)};hermesHome=${psLiteral(reservation.hermesHome)};tokenFingerprint=${psLiteral(reservation.tokenFingerprint)};startedAt=${psLiteral(reservation.startedAt)}}|ConvertTo-Json -Compress; ` +
+        `  $lock | & ${helper('write-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)} | Out-Null; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; $spawnLines|Write-Output`
+      : '',
+    '  if([IO.File]::Exists($marker)){throw "remote update marker claimed during backend spawn"}',
+    '}finally{try{$mutex.Unlock(0,1)}catch{};$mutex.Dispose()}'
+  ]
+    .filter(line => line !== '')
+    .join(';')
+
+  return powerShellCommand(script)
+}
+
+async function atomicWindowsSpawn(ssh, runtime, stdinData, reservation: any = {}) {
+  const output = await ssh.exec(atomicWindowsSpawnCommand(runtime, reservation), { stdinData })
+
+  const lines = stripPowerShellNoise(output)
+
+  const parsed = JSON.parse(lines[lines.length - 1] || 'null')
+
+  if (parsed?.error) {
+    const error: any = new Error(parsed.error)
+    error.kind = parsed.kind || 'remote-helper-error'
+    throw error
   }
 
   return parsed
@@ -203,6 +420,80 @@ async function cleanupOwned(ssh, runtime, ownershipId, lock) {
   await attempt(() => helper(ssh, runtime, 'remove-lock', [ownershipId]))
 }
 
+function windowsLockMatchesManagedUpdateScope(lock, expected) {
+  return Boolean(
+    lock &&
+    expected &&
+    lock.ownershipId === expected.ownershipId &&
+    lock.pid === expected.pid &&
+    lock.spawnNonce === expected.spawnNonce &&
+    lock.creationTimeNs === expected.creationTimeNs &&
+    lock.profile === expected.profile &&
+    lock.hermesPath === expected.hermesPath &&
+    lock.hermesHome === expected.hermesHome
+  )
+}
+
+/**
+ * Terminate a Windows serve only after the persisted ownership record and the
+ * kernel creation-time proof still match the exact scope Desktop connected.
+ * Leave the record in place for the post-update reconnect to reclaim; this
+ * prevents a delayed cleanup from deleting a replacement owner's record.
+ */
+async function terminateOwnedWindowsDashboardForUpdate(ssh, runtime, expected) {
+  let lock = await helper(ssh, runtime, 'read-lock', [expected?.ownershipId || ''])
+
+  if (!validLock(lock, expected?.ownershipId) || !windowsLockMatchesManagedUpdateScope(lock, expected)) {
+    const error: any = new Error('The remote Windows ownership record changed before the managed update.')
+    error.kind = 'ownership-changed'
+    throw error
+  }
+
+  let state = await processState(ssh, runtime, lock)
+
+  if (state.indeterminate) {
+    const error: any = new Error('Could not prove the remote Windows process identity for the managed update.')
+    error.kind = 'transient-transport-error'
+    throw error
+  }
+
+  if (!state.alive) {
+    return { pid: lock.pid, terminated: false, alreadyStopped: true }
+  }
+
+  if (!state.owned) {
+    const error: any = new Error('Refusing to terminate a remote Windows process whose ownership is unproven.')
+    error.kind = 'foreign-backend'
+    throw error
+  }
+
+  // Fence the proof against a record replacement before signalling.
+  lock = await helper(ssh, runtime, 'read-lock', [expected.ownershipId])
+
+  if (!validLock(lock, expected.ownershipId) || !windowsLockMatchesManagedUpdateScope(lock, expected)) {
+    const error: any = new Error('The remote Windows ownership record changed during process verification.')
+    error.kind = 'ownership-changed'
+    throw error
+  }
+
+  state = await processState(ssh, runtime, lock)
+
+  if (state.indeterminate || !state.alive || !state.owned) {
+    const error: any = new Error('The remote Windows process identity changed during managed update drain.')
+    error.kind = state.indeterminate ? 'transient-transport-error' : 'ownership-changed'
+    throw error
+  }
+
+  await helper(ssh, runtime, 'terminate', [
+    String(lock.pid),
+    String(lock.creationTimeNs),
+    lock.hermesPath,
+    lock.spawnNonce
+  ])
+
+  return { pid: lock.pid, terminated: true, alreadyStopped: false }
+}
+
 async function waitReady(ssh, runtime, ownershipId, lock, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs
 
@@ -261,6 +552,28 @@ async function waitReady(ssh, runtime, ownershipId, lock, timeoutMs, signal) {
   throw error
 }
 
+async function waitForWindowsSpawnCompletion(ssh, runtime, ownershipId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    const lock = await helper(ssh, runtime, 'read-lock', [ownershipId])
+
+    if (!lock) {
+      return false
+    }
+
+    if (validLock(lock, ownershipId) && lock.port > 0) {
+      return true
+    }
+
+    await new Promise(resolve => setTimeout(resolve, READY_POLL_INTERVAL_MS))
+  }
+
+  const error: any = new Error('Timed out waiting for the concurrent Windows SSH connection to publish its backend.')
+  error.kind = 'spawn-failed'
+  throw error
+}
+
 async function connectWindowsRemote(deps) {
   const {
     ssh,
@@ -275,11 +588,12 @@ async function connectWindowsRemote(deps) {
     waitForHermes,
     probeReuseProof,
     rememberLog = () => {},
-    readyTimeoutMs = 45_000
+    readyTimeoutMs = resolveReadyTimeoutMs()
   } = deps
 
   assertBootstrapNotSuperseded(signal)
   const runtime = await probeWindowsRemote(ssh, remoteHermesPath)
+  await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
   const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
 
   if (!inspection.supported) {
@@ -293,6 +607,7 @@ async function connectWindowsRemote(deps) {
   rememberLog(`[ssh-lifecycle] remote platform Windows/${runtime.arch}`)
   rememberLog(`[ssh-lifecycle] located hermes at ${runtime.hermesPath}`)
 
+  await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
   const lock = await helper(ssh, runtime, 'read-lock', [ownershipId])
 
   if (validLock(lock, ownershipId)) {
@@ -307,6 +622,7 @@ async function connectWindowsRemote(deps) {
     const reusable = reusableWindowsLock(lock, state, profile, reuseToken, runtime)
 
     if (reusable) {
+      await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
       const localPort = await pickLocalPort()
       await forward(localPort, lock.port)
 
@@ -327,7 +643,9 @@ async function connectWindowsRemote(deps) {
             hermesVersion,
             ownershipId,
             spawnNonce: lock.spawnNonce,
-            creationTimeNs: lock.creationTimeNs
+            creationTimeNs: lock.creationTimeNs,
+            hermesHome: runtime.hermesHome,
+            pythonPath: runtime.python
           }
         }
 
@@ -336,35 +654,70 @@ async function connectWindowsRemote(deps) {
         }
 
         await cancelForward(localPort, lock.port)
+        await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
         await cleanupOwned(ssh, runtime, ownershipId, lock)
       } catch (error) {
         await cancelForward(localPort, lock.port)
         throw error
       }
     } else {
+      await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
       await cleanupOwned(ssh, runtime, ownershipId, lock)
     }
   } else if (lock) {
+    await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
     await helper(ssh, runtime, 'remove-lock', [ownershipId])
   }
 
   assertBootstrapNotSuperseded(signal)
+  await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
   const token = crypto.randomBytes(32).toString('hex')
   const spawnNonce = crypto.randomBytes(8).toString('hex')
   await helper(ssh, runtime, 'upload-token', [ownershipId, spawnNonce], token)
+  const startedAt = new Date().toISOString()
+  const tokenFingerprint = fingerprintToken(token)
   let spawned
 
   try {
-    spawned = await helper(
+    await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
+    spawned = await atomicWindowsSpawn(
       ssh,
       runtime,
-      'spawn',
-      [],
-      JSON.stringify({ ownershipId, spawnNonce, profile, hermesPath: runtime.hermesPath })
+      JSON.stringify({ ownershipId, spawnNonce, profile, hermesPath: runtime.hermesPath }),
+      {
+        ownershipId,
+        spawnNonce,
+        profile,
+        hermesPath: runtime.hermesPath,
+        hermesHome: runtime.hermesHome,
+        tokenFingerprint,
+        startedAt
+      }
     )
   } catch (error) {
     await helper(ssh, runtime, 'remove-token', [ownershipId, spawnNonce])
     throw error
+  }
+
+  if (spawned.existing) {
+    await helper(ssh, runtime, 'remove-token', [ownershipId, spawnNonce])
+
+    if (!reuseToken) {
+      const error: any = new Error(
+        'Another SSH connection owns this remote dashboard; a session token is required to reuse it.'
+      )
+
+      error.kind = 'remote-ownership-contended'
+      throw error
+    }
+
+    const published = await waitForWindowsSpawnCompletion(ssh, runtime, ownershipId, readyTimeoutMs)
+
+    if (!published) {
+      return connectWindowsRemote({ ...deps, reuseToken })
+    }
+
+    return connectWindowsRemote({ ...deps, reuseToken })
   }
 
   const owned = {
@@ -378,8 +731,8 @@ async function connectWindowsRemote(deps) {
     profile,
     hermesPath: runtime.hermesPath,
     hermesHome: runtime.hermesHome,
-    tokenFingerprint: fingerprintToken(token),
-    startedAt: new Date().toISOString()
+    tokenFingerprint,
+    startedAt
   }
 
   let localPort = 0
@@ -412,7 +765,9 @@ async function connectWindowsRemote(deps) {
       hermesVersion,
       ownershipId,
       spawnNonce,
-      creationTimeNs: spawned.creationTimeNs
+      creationTimeNs: spawned.creationTimeNs,
+      hermesHome: runtime.hermesHome,
+      pythonPath: runtime.python
     }
   } catch (error) {
     if (localPort && remotePort) {
@@ -440,6 +795,8 @@ function buildWindowsInteractiveCommand(remoteCwd = '') {
 }
 
 export {
+  assertWindowsRemoteInstallUpdateClear,
+  atomicWindowsSpawnCommand,
   buildWindowsInteractiveCommand,
   connectWindowsRemote,
   detectRemotePlatform,
@@ -450,5 +807,7 @@ export {
   probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,
+  stripPowerShellNoise,
+  terminateOwnedWindowsDashboardForUpdate,
   validLock
 }
