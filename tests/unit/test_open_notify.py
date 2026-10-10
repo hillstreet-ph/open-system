@@ -1,10 +1,12 @@
 """Open Notify routing, privacy and ambiguous-delivery regression tests."""
 import importlib.util
+import errno
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 SOURCE = Path(__file__).resolve().parents[2] / "scripts/operations/open_notify.py"
@@ -117,6 +119,34 @@ class NotifyTests(unittest.TestCase):
         with mock.patch.object(notify, "send_event", return_value={"status": "delivered"}) as sender:
             notify.reconcile(self.home, config)
         self.assertIn("1 enabled jobs", sender.call_args.args[3])
+
+    def test_other_provider_credentials_rejected_without_state(self):
+        samples = ["xoxb-" + "A" * 20, "xapp-1-" + "A" * 20,
+                   "AKIA" + "A" * 16, "AIza" + "A" * 35,
+                   "glpat-" + "A" * 20, "SG." + "A" * 20,
+                   "ntn_" + "A" * 20, "pypi-" + "A" * 20,
+                   "sk_live_" + "A" * 20, "hf_" + "A" * 20]
+        for sample in samples:
+            with self.subTest(prefix=sample[:5]), self.assertRaises(ValueError):
+                notify.send_event(self.home, "open-system", "provider", sample)
+        self.assertFalse((self.home / "state").exists())
+
+    def test_utf16_overflow_rejected_before_ledger(self):
+        with self.assertRaises(ValueError):
+            notify.send_event(self.home, "open-system", "emoji", "😀" * 3000, transport=self.success)
+        self.assertFalse((self.home / "state").exists())
+        result = notify.send_event(self.home, "open-system", "emoji", "😀" * 100, transport=self.success)
+        self.assertEqual(result["status"], "delivered")
+
+    def test_windows_lock_retries_beyond_ten_seconds(self):
+        win = SimpleNamespace(LK_NBLCK=2, LK_UNLCK=0,
+                              locking=mock.Mock(side_effect=[OSError(errno.EACCES, "busy")] * 12 + [None, None]))
+        path = self.home / "contention.lock"
+        with mock.patch.dict("sys.modules", {"msvcrt": win}), mock.patch.object(notify.os, "name", "nt"):
+            with mock.patch.object(notify.time, "monotonic", side_effect=range(30)), mock.patch.object(notify.time, "sleep"):
+                with notify.delivery_lock(path):
+                    pass
+        self.assertEqual(win.locking.call_count, 14)
 
     def test_wrong_bot_identity_rejected(self):
         (self.home / ".env").write_text("TELEGRAM_PROJECT_BOT_TOKEN=123:synthetic-test-only\n", encoding="utf-8")
