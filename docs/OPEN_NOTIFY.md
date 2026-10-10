@@ -108,3 +108,6 @@ python tests/unit/test_open_notify.py
 
 Live delivery evidence verifies notification transport only. It does not prove
 all integrations, encrypted restores, or production readiness.
+
+
+Verified database boundary repair is tracked in [OpenBox #41](https://github.com/hillstreet-ph/open-box/issues/41). Canonical schemas and active legacy public tables are distinct; preserve source records until migration and grants are verified. Supabase catalog metadata is evidence of existing storage, not proof of a working global knowledge search. Runtime smart approval handles routine commands; unresolved unattended escalation remains denied. The existing hourly ChatGPT automation is enabled with bounded project-scoped work and no credential rotation.
