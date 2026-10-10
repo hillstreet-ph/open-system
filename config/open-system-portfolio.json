@@ -99,9 +99,37 @@
       "runtime-open-connect-http-403",
       "runtime-composio-secret-not-configured",
       "cross-project-schema-reconciliation",
-      "postgres-brain-not-created"
+      "shared-knowledge-ingestion-unverified",
+      "open-box-legacy-rls-boundary"
     ],
     "plugin_endpoint": "https://open-connect.site/mcp",
     "legacy_chatgpt_routes": "unverified-do-not-use"
+  },
+  "database_evidence": {
+    "observed_at": "2026-10-10",
+    "canonical_schema_reconciliation": "hillstreet-ph/open-system#39",
+    "projects": {
+      "open_platform": {
+        "id": "huadtiuuoiriqrjpjxhr",
+        "active_sources": [
+          "public.resources",
+          "public.app_connections",
+          "public.toolkits",
+          "public.open_system_backup_catalog",
+          "public.open_system_deployments"
+        ],
+        "open_box_legacy_boundary": "hillstreet-ph/open-box#41"
+      },
+      "operations": {
+        "id": "hoseohvgoiarxluxqwqv",
+        "active_sources": [
+          "public.open_tgate_accounts",
+          "public.open_tgate_entities",
+          "public.open_tgate_chats",
+          "public.open_tgate_messages"
+        ],
+        "canonical_schemas": "exist-without-verified-active-data-migration"
+      }
+    }
   }
 }
