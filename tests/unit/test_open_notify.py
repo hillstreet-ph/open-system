@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 import unittest.mock as mock
@@ -88,6 +89,16 @@ class NotifyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             notify.load_routing(config)
 
+    def test_routing_rejects_duplicate_project_topic_ids(self):
+        config = self.home / "portfolio.json"
+        self.write_portfolio(config, {
+            "open-system": {"topic_id": 185},
+            "open-box": {"topic_id": 185},
+        })
+
+        with self.assertRaisesRegex(ValueError, "unique"):
+            notify.load_routing(config)
+
     def test_duplicate_event_does_not_send_twice(self):
         for _ in range(2):
             notify.send_event(self.home, "open-system", "run", "Health check", transport=self.success)
@@ -147,6 +158,31 @@ class NotifyTests(unittest.TestCase):
         self.assertEqual(second, {"status": "retry", "project": "open-box", "deferred": True})
         self.assertEqual(len(self.calls), 1)
 
+    def test_global_cooldown_records_deferred_event_before_return(self):
+        def limited(token, payload):
+            self.calls.append(payload)
+            return {"ok": False, "error_code": 429, "parameters": {"retry_after": 100}}
+
+        notify.send_event(self.home, "open-system", "first", "Health check", transport=limited)
+        deferred = notify.send_event(
+            self.home, "open-box", "second", "Box health check", transport=limited,
+        )
+
+        ledger = json.loads(
+            (self.home / "state/open-notify/ledger.json").read_text(encoding="utf-8")
+        )
+        deferred_entries = [entry for entry in ledger.values() if entry["project"] == "open-box"]
+        self.assertEqual(deferred, {"status": "retry", "project": "open-box", "deferred": True})
+        self.assertEqual(len(deferred_entries), 1)
+        self.assertEqual(deferred_entries[0]["status"], "retry")
+        self.assertEqual(deferred_entries[0]["attempts"], 0)
+        self.assertGreater(deferred_entries[0]["next_attempt"], time.time())
+        conflict = notify.send_event(
+            self.home, "open-box", "second", "Changed box health", transport=limited,
+        )
+        self.assertEqual(conflict["status"], "conflict")
+        self.assertEqual(len(self.calls), 1)
+
     def test_restricted_payload_and_unknown_project_rejected(self):
         with self.assertRaises(ValueError):
             notify.send_event(self.home, "open-system", "run", "Staff record", classification="restricted")
@@ -164,6 +200,8 @@ class NotifyTests(unittest.TestCase):
             "OAuth callback https://example.invalid/cb?code=opaque-short-value",
             "Signed file https://example.invalid/file?x=1&signature=opaque-short-value",
             "Encoded key https://example.invalid/file?x%2Damz%2Dsignature=opaque-short-value",
+            "Google signed file https://example.invalid/file?X-Goog-Signature=opaque-short-value",
+            "Azure signed file https://example.invalid/file?sv=1&sig=opaque-short-value",
         ]
         for sample in samples:
             with self.subTest(sample=sample), self.assertRaises(ValueError):

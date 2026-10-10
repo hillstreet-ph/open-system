@@ -26,11 +26,15 @@ def load_routing(config: Path) -> dict:
     if not isinstance(chat_id, int) or not isinstance(bot_id, int) or telegram.get("no_broadcast") is not True:
         raise ValueError("Bounded Telegram routing configuration required")
     projects = {}
+    topic_ids = set()
     for project, settings in portfolio.get("projects", {}).items():
         topic_id = settings.get("topic_id")
         if topic_id is not None:
             if not isinstance(topic_id, int):
                 raise ValueError("Project topic IDs must be integers")
+            if topic_id in topic_ids:
+                raise ValueError("Project topic IDs must be unique")
+            topic_ids.add(topic_id)
             projects[project] = topic_id
     return {"chat_id": chat_id, "bot_id": bot_id, "projects": projects, "portfolio": portfolio}
 
@@ -130,7 +134,8 @@ SECRET = re.compile(
 SENSITIVE_QUERY_PARAMS = frozenset({
     "access_token", "refresh_token", "id_token", "token", "api_key",
     "apikey", "client_secret", "password", "auth", "jwt", "session",
-    "secret", "key", "code", "signature", "x-amz-signature",
+    "secret", "key", "code", "signature", "sig", "x-amz-signature",
+    "x-goog-signature", "x-ms-signature",
 })
 QUERY_PARAM = re.compile(r"[?&]([^\s&#=]+)=")
 
@@ -288,8 +293,21 @@ def send_event(home: Path, project: str, event_key: str, summary: str,
             if entry.get("attempts", 0) >= 3:
                 return {"status": "failed", "project": project}
         cooldown = json.loads(cooldown_path.read_text(encoding="utf-8")) if cooldown_path.exists() else {}
+        cooldown_until = cooldown.get("until", 0)
         if (cooldown.get("bot_id") == bot_id and cooldown.get("chat_id") == chat_id
-                and cooldown.get("until", 0) > time.time()):
+                and cooldown_until > time.time()):
+            if not entry:
+                entry = {"digest": digest, "status": "retry", "attempts": 0,
+                         "project": project, "updated_at": time.time(),
+                         "next_attempt": cooldown_until}
+            else:
+                entry.update(status="retry", updated_at=time.time(),
+                             next_attempt=max(entry.get("next_attempt", 0), cooldown_until))
+            ledger[key] = entry
+            ledger = dict(sorted(
+                ledger.items(), key=lambda pair: pair[1]["updated_at"],
+            )[-500:])
+            atomic_save(ledger_path, ledger)
             return {"status": "retry", "project": project, "deferred": True}
         attempts = entry.get("attempts", 0) + 1
         # Persist before network I/O. A crash after Telegram accepts a message is

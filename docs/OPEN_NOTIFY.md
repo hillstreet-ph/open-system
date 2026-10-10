@@ -105,9 +105,11 @@ tests, reviews and exact-head checks. Cap repair at three attempts.
 
 ## Validation
 
-Twenty-eight regression tests cover manifest-sourced routing, deduplication, changed-content
+Thirty regression tests cover manifest-sourced routing, unique project-topic ownership,
+deduplication, changed-content
 conflicts, timeout uncertainty, wrong-thread uncertainty, bounded 429 retries,
-cross-event cooldown, restricted/unknown destinations, credential and sensitive-query rejection,
+durable cross-event cooldown deferral, restricted/unknown destinations, credential and
+vendor-signed-query rejection,
 fingerprint-only storage and directory durability,
 bot identity, injected environment credentials, fine-grained PAT rejection,
 legacy/BOM/id-less scheduler state, provider-token families, UTF-16 message limits,
