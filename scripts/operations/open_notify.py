@@ -19,7 +19,7 @@ CHAT_ID = -1004449684934
 BOT_ID = 8902902175
 SECRET = re.compile(
     r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b|"
-    r"\b(?:gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{12,})|"
+    r"\b(?:github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{12,})|"
     r"-----BEGIN .*PRIVATE KEY-----|"
     r"(?i:bearer\s+\S+|password\s*[:=]|token\s*[:=]|secret\s*[:=])"
 )
@@ -51,7 +51,7 @@ def delivery_lock(path: Path):
 
 
 def load_token(home: Path) -> str:
-    token = os.environ.get("OPEN_NOTIFY_BOT_TOKEN", "")
+    token = os.environ.get("TELEGRAM_PROJECT_BOT_TOKEN") or os.environ.get("OPEN_NOTIFY_BOT_TOKEN", "")
     if not token:
         path = home / ".env"
         if path.exists():
@@ -192,9 +192,9 @@ def reconcile(home: Path, config: Path) -> list[dict]:
         outcomes.append(send_event(home, project, "health:" + period + ":" + fingerprint, summary))
     jobs_file = home / "cron" / "jobs.json"
     if jobs_file.exists():
-        jobs_data = json.loads(jobs_file.read_text(encoding="utf-8"))
+        jobs_data = json.loads(jobs_file.read_text(encoding="utf-8-sig"))
         jobs = jobs_data.get("jobs", []) if isinstance(jobs_data, dict) else jobs_data
-        failed = sorted(str(job["id"]) for job in jobs if job.get("enabled") and job.get("last_status") == "error")
+        failed = sorted(str(job["id"]) for job in jobs if job.get("enabled", True) and job.get("last_status") == "error")
         digest = hashlib.sha256(json.dumps(failed).encode()).hexdigest()[:20]
         period = time.strftime("%Y-%m-%d", time.gmtime())
         summary = "Scheduler audit: " + str(len(failed)) + " enabled jobs last reported an error."
