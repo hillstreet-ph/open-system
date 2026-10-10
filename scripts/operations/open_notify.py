@@ -87,6 +87,9 @@ SECRET = re.compile(
     r"-----BEGIN .*PRIVATE KEY-----|"
     r"(?i:bearer\s+\S+|password\s*[:=]|token\s*[:=]|secret\s*[:=])"
     + "|" + "|".join(CREDENTIAL_PREFIX_PATTERNS)
+    + r"|(?i:\b[\w.-]*(?:api[_.-]?key|key|password|passwd|pass|pw|token|secret|credential|auth)[\w.-]*[\"\']?\s*[:=])"
+    + r"|https?://[^\s/:@]+:[^\s/@]+@"
+    + r"|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
 )
 
 class DeliveryBusyError(OSError):
