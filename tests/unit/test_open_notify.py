@@ -148,6 +148,16 @@ class NotifyTests(unittest.TestCase):
                     pass
         self.assertEqual(win.locking.call_count, 14)
 
+    def test_opaque_assignments_auth_urls_and_jwt_rejected(self):
+        samples = ["API_KEY=synthetic-opaque", "db_pw: synthetic-opaque",
+                   '"client_secret": "synthetic-opaque"', "Authorization: Basic synthetic-opaque",
+                   "https://user:synthetic-password@example.invalid/private",
+                   "eyJ" + "A" * 16 + "." + "B" * 16 + "." + "C" * 16]
+        for sample in samples:
+            with self.assertRaises(ValueError):
+                notify.send_event(self.home, "open-system", "opaque", sample)
+        self.assertFalse((self.home / "state").exists())
+
     def test_wrong_bot_identity_rejected(self):
         (self.home / ".env").write_text("TELEGRAM_PROJECT_BOT_TOKEN=123:synthetic-test-only\n", encoding="utf-8")
         with self.assertRaises(ValueError):
