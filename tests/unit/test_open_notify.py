@@ -1,9 +1,11 @@
 """Open Notify routing, privacy and ambiguous-delivery regression tests."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 SOURCE = Path(__file__).resolve().parents[2] / "scripts/operations/open_notify.py"
 spec = importlib.util.spec_from_file_location("open_notify", SOURCE)
@@ -93,6 +95,28 @@ class NotifyTests(unittest.TestCase):
         content = (self.home / "state/open-notify/ledger.json").read_text(encoding="utf-8")
         self.assertNotIn("Synthetic diagnostic", content)
         self.assertNotIn("synthetic-test-only", content)
+
+    def test_provider_injected_environment_without_env_file(self):
+        (self.home / ".env").unlink()
+        with mock.patch.dict(os.environ, {"TELEGRAM_PROJECT_BOT_TOKEN": str(notify.BOT_ID) + ":synthetic-env-only"}):
+            result = notify.send_event(self.home, "open-system", "env", "Health check", transport=self.success)
+        self.assertEqual(result["status"], "delivered")
+
+    def test_fine_grained_github_credential_is_rejected(self):
+        with self.assertRaises(ValueError):
+            notify.send_event(self.home, "open-system", "pat", "github_pat_synthetic_noncredential")
+        self.assertFalse((self.home / "state").exists())
+
+    def test_scheduler_bom_and_legacy_enabled_default(self):
+        (self.home / "cron").mkdir()
+        jobs = [{"id": "legacy", "last_status": "error"},
+                {"id": "disabled", "enabled": False, "last_status": "error"}]
+        (self.home / "cron/jobs.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8-sig")
+        config = self.home / "portfolio.json"
+        config.write_text(json.dumps({"projects": {}}), encoding="utf-8")
+        with mock.patch.object(notify, "send_event", return_value={"status": "delivered"}) as sender:
+            notify.reconcile(self.home, config)
+        self.assertIn("1 enabled jobs", sender.call_args.args[3])
 
     def test_wrong_bot_identity_rejected(self):
         (self.home / ".env").write_text("TELEGRAM_PROJECT_BOT_TOKEN=123:synthetic-test-only\n", encoding="utf-8")
