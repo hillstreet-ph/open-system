@@ -123,10 +123,10 @@
       "operations": {
         "id": "hoseohvgoiarxluxqwqv",
         "active_sources": [
-          "public.open_tgate_accounts",
-          "public.open_tgate_entities",
-          "public.open_tgate_chats",
-          "public.open_tgate_messages"
+          "public.open_tgate_tg_accounts",
+          "public.open_tgate_tg_entities",
+          "public.open_tgate_tg_chats",
+          "public.open_tgate_tg_messages"
         ],
         "canonical_schemas": "exist-without-verified-active-data-migration"
       }
