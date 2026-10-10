@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -24,13 +24,38 @@ SECRET = re.compile(
     r"(?i:bearer\s+\S+|password\s*[:=]|token\s*[:=]|secret\s*[:=])"
 )
 
+@contextmanager
+def delivery_lock(path: Path):
+    """Lock delivery state on POSIX and Windows."""
+    with path.open("a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            os.chmod(path, 0o600)
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
 
 def load_token(home: Path) -> str:
     token = os.environ.get("OPEN_NOTIFY_BOT_TOKEN", "")
     if not token:
         path = home / ".env"
         if path.exists():
-            for line in path.read_text().splitlines():
+            for line in path.read_text(encoding="utf-8").splitlines():
                 key, sep, value = line.partition("=")
                 if sep and key.strip() == "TELEGRAM_PROJECT_BOT_TOKEN":
                     token = value.strip().strip("\"'")
@@ -64,7 +89,7 @@ def api_call(token: str, payload: dict) -> dict:
 def atomic_save(path: Path, data: dict) -> None:
     temp = path.with_suffix(".tmp")
     descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w") as handle:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         json.dump(data, handle)
         handle.flush()
         os.fsync(handle.fileno())
@@ -87,9 +112,8 @@ def send_event(home: Path, project: str, event_key: str, summary: str,
     key = hashlib.sha256((project + ":" + event_key).encode()).hexdigest()
     digest = hashlib.sha256(summary.encode()).hexdigest()
     ledger_path = state / "ledger.json"
-    with (state / "delivery.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {}
+    with delivery_lock(state / "delivery.lock"):
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else {}
         entry = ledger.get(key, {})
         if entry:
             if entry.get("digest") != digest:
@@ -152,7 +176,7 @@ def probe(url: str, expected_body: str | None = None) -> dict:
 
 
 def reconcile(home: Path, config: Path) -> list[dict]:
-    portfolio = json.loads(config.read_text())
+    portfolio = json.loads(config.read_text(encoding="utf-8"))
     outcomes = []
     for project, settings in portfolio["projects"].items():
         url = settings.get("health_url")
@@ -168,7 +192,7 @@ def reconcile(home: Path, config: Path) -> list[dict]:
         outcomes.append(send_event(home, project, "health:" + period + ":" + fingerprint, summary))
     jobs_file = home / "cron" / "jobs.json"
     if jobs_file.exists():
-        jobs_data = json.loads(jobs_file.read_text())
+        jobs_data = json.loads(jobs_file.read_text(encoding="utf-8"))
         jobs = jobs_data.get("jobs", []) if isinstance(jobs_data, dict) else jobs_data
         failed = sorted(str(job["id"]) for job in jobs if job.get("enabled") and job.get("last_status") == "error")
         digest = hashlib.sha256(json.dumps(failed).encode()).hexdigest()[:20]
