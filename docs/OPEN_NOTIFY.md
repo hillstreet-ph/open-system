@@ -97,10 +97,11 @@ tests, reviews and exact-head checks. Cap repair at three attempts.
 
 ## Validation
 
-Ten regression tests cover exact thread routing, deduplication, changed-content
+Thirteen regression tests cover exact thread routing, deduplication, changed-content
 conflicts, timeout uncertainty, wrong-thread uncertainty, bounded 429 retries,
 restricted/unknown destinations, credential rejection, fingerprint-only storage
-and bot identity. Run:
+bot identity, injected environment credentials, fine-grained PAT rejection,
+and legacy/BOM scheduler state. Run:
 
 ```bash
 python tests/unit/test_open_notify.py
