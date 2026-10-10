@@ -15,7 +15,7 @@ class NotifyTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.home = Path(self.temp.name)
-        (self.home / ".env").write_text("TELEGRAM_PROJECT_BOT_TOKEN=" + str(notify.BOT_ID) + ":synthetic-test-only\n")
+        (self.home / ".env").write_text("TELEGRAM_PROJECT_BOT_TOKEN=" + str(notify.BOT_ID) + ":synthetic-test-only\n", encoding="utf-8")
         self.calls = []
 
     def tearDown(self):
@@ -69,9 +69,9 @@ class NotifyTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         ledger_path = self.home / "state/open-notify/ledger.json"
         for _ in range(2):
-            ledger = json.loads(ledger_path.read_text())
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
             next(iter(ledger.values()))["next_attempt"] = 0
-            ledger_path.write_text(json.dumps(ledger))
+            ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
             result = notify.send_event(self.home, "open-system", "run", "Health check", transport=limited)
         self.assertEqual(result["status"], "failed")
         self.assertEqual(len(self.calls), 3)
@@ -90,12 +90,12 @@ class NotifyTests(unittest.TestCase):
 
     def test_ledger_contains_fingerprint_not_message_text(self):
         notify.send_event(self.home, "open-system", "run", "Synthetic diagnostic", transport=self.success)
-        content = (self.home / "state/open-notify/ledger.json").read_text()
+        content = (self.home / "state/open-notify/ledger.json").read_text(encoding="utf-8")
         self.assertNotIn("Synthetic diagnostic", content)
         self.assertNotIn("synthetic-test-only", content)
 
     def test_wrong_bot_identity_rejected(self):
-        (self.home / ".env").write_text("TELEGRAM_PROJECT_BOT_TOKEN=123:synthetic-test-only\n")
+        (self.home / ".env").write_text("TELEGRAM_PROJECT_BOT_TOKEN=123:synthetic-test-only\n", encoding="utf-8")
         with self.assertRaises(ValueError):
             notify.send_event(self.home, "open-system", "run", "Health check", transport=self.success)
 
