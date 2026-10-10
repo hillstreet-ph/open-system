@@ -454,7 +454,7 @@ class TestDelegationCleanup:
             reset_hermes_home_override,
             set_hermes_home_override,
         )
-        from tools.delegate_tool import _run_single_child
+        from tools.delegate_tool import _run_single_child, _set_subagent_approval_cb
 
         relay_runtime._reset_for_tests()
         profile_home = tmp_path / "profile-timeout"
@@ -510,9 +510,14 @@ class TestDelegationCleanup:
         import tools.daemon_pool as daemon_pool
 
         class StartedChildExecutor(daemon_pool.DaemonThreadPoolExecutor):
+            def __init__(self, *args, **kwargs):
+                self.wait_for_child = kwargs.get("initializer") is _set_subagent_approval_cb
+                super().__init__(*args, **kwargs)
+
             def submit(self, fn, *args, **kwargs):
                 future = super().submit(fn, *args, **kwargs)
-                assert child_started.wait(timeout=5), "Child failed to start its turn"
+                if self.wait_for_child:
+                    assert child_started.wait(timeout=5), "Child failed to start its turn"
                 return future
 
         monkeypatch.setattr(daemon_pool, "DaemonThreadPoolExecutor", StartedChildExecutor)
