@@ -6,8 +6,8 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock as mock
 from types import SimpleNamespace
-from unittest import mock
 
 SOURCE = Path(__file__).resolve().parents[2] / "scripts/operations/open_notify.py"
 spec = importlib.util.spec_from_file_location("open_notify", SOURCE)
@@ -120,6 +120,17 @@ class NotifyTests(unittest.TestCase):
             notify.reconcile(self.home, config)
         self.assertIn("1 enabled jobs", sender.call_args.args[3])
 
+    def test_scheduler_accepts_legacy_unescaped_control_character(self):
+        (self.home / "cron").mkdir()
+        (self.home / "cron/jobs.json").write_bytes(
+            b'{"jobs":[{"id":"legacy\\u0001job","last_status":"error"}]}'.replace(b"\\u0001", b"\x01")
+        )
+        config = self.home / "portfolio.json"
+        config.write_text(json.dumps({"projects": {}}), encoding="utf-8")
+        with mock.patch.object(notify, "send_event", return_value={"status": "delivered"}) as sender:
+            notify.reconcile(self.home, config)
+        self.assertIn("1 enabled jobs", sender.call_args.args[3])
+
     def test_other_provider_credentials_rejected_without_state(self):
         samples = ["xoxb-" + "A" * 20, "xapp-1-" + "A" * 20,
                    "AKIA" + "A" * 16, "AIza" + "A" * 35,
@@ -157,6 +168,29 @@ class NotifyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 notify.send_event(self.home, "open-system", "opaque", sample)
         self.assertFalse((self.home / "state").exists())
+
+    def test_transport_userinfo_credentials_rejected(self):
+        samples = ["postgresql://admin:synthetic-password@host/db",
+                   "redis://default:synthetic-password@host/0",
+                   "ssh://admin:synthetic-password@host/repo"]
+        for sample in samples:
+            with self.assertRaises(ValueError):
+                notify.send_event(self.home, "open-system", "transport", sample)
+        self.assertFalse((self.home / "state").exists())
+
+    def test_bot_prefixed_telegram_credential_rejected(self):
+        sample = "https://api.telegram.org/bot1234567890:" + "A" * 35 + "/sendMessage"
+        with self.assertRaises(ValueError):
+            notify.send_event(self.home, "open-system", "bot-url", sample)
+        self.assertFalse((self.home / "state").exists())
+
+    def test_legacy_dotenv_token_alias_is_loaded(self):
+        (self.home / ".env").write_text(
+            "OPEN_NOTIFY_BOT_TOKEN=" + str(notify.BOT_ID) + ":synthetic-legacy-only\n",
+            encoding="utf-8",
+        )
+        result = notify.send_event(self.home, "open-system", "legacy-env", "Health check", transport=self.success)
+        self.assertEqual(result["status"], "delivered")
 
     def test_wrong_bot_identity_rejected(self):
         (self.home / ".env").write_text("TELEGRAM_PROJECT_BOT_TOKEN=123:synthetic-test-only\n", encoding="utf-8")
