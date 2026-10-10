@@ -4,7 +4,9 @@ import errno
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 import unittest.mock as mock
@@ -22,6 +24,16 @@ class NotifyTests(unittest.TestCase):
         (self.home / ".env").write_text("TELEGRAM_PROJECT_BOT_TOKEN=" + str(notify.BOT_ID) + ":synthetic-test-only\n", encoding="utf-8")
         self.calls = []
 
+    def write_portfolio(self, path, projects=None):
+        path.write_text(json.dumps({
+            "telegram": {
+                "chat_id": notify.CHAT_ID,
+                "expected_bot_id": notify.BOT_ID,
+                "no_broadcast": True,
+            },
+            "projects": projects if projects is not None else {},
+        }), encoding="utf-8")
+
     def tearDown(self):
         self.temp.cleanup()
 
@@ -36,6 +48,56 @@ class NotifyTests(unittest.TestCase):
             self.assertEqual(result["status"], "delivered")
             self.assertEqual(self.calls[-1]["message_thread_id"], thread)
             self.assertEqual(self.calls[-1]["chat_id"], notify.CHAT_ID)
+
+    def test_delivery_uses_portfolio_routing_source_of_truth(self):
+        config = self.home / "portfolio.json"
+        config.write_text(json.dumps({
+            "telegram": {
+                "chat_id": -1000000000001,
+                "expected_bot_id": notify.BOT_ID,
+                "no_broadcast": True,
+            },
+            "projects": {
+                "open-system": {"topic_id": 901},
+                "open-kobeplay": {"topic_id": None},
+            },
+        }), encoding="utf-8")
+
+        notify.send_event(
+            self.home, "open-system", "config", "Health check",
+            transport=self.success, config=config,
+        )
+
+        self.assertEqual(self.calls[-1]["chat_id"], -1000000000001)
+        self.assertEqual(self.calls[-1]["message_thread_id"], 901)
+        with self.assertRaises(ValueError):
+            notify.send_event(
+                self.home, "open-kobeplay", "config", "Health check",
+                transport=self.success, config=config,
+            )
+
+    def test_routing_rejects_broadcast_enabled_manifest(self):
+        config = self.home / "portfolio.json"
+        config.write_text(json.dumps({
+            "telegram": {
+                "chat_id": notify.CHAT_ID,
+                "expected_bot_id": notify.BOT_ID,
+                "no_broadcast": False,
+            },
+            "projects": {"open-system": {"topic_id": 185}},
+        }), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            notify.load_routing(config)
+
+    def test_routing_rejects_duplicate_project_topic_ids(self):
+        config = self.home / "portfolio.json"
+        self.write_portfolio(config, {
+            "open-system": {"topic_id": 185},
+            "open-box": {"topic_id": 185},
+        })
+
+        with self.assertRaisesRegex(ValueError, "unique"):
+            notify.load_routing(config)
 
     def test_duplicate_event_does_not_send_twice(self):
         for _ in range(2):
@@ -72,13 +134,54 @@ class NotifyTests(unittest.TestCase):
         notify.send_event(self.home, "open-system", "run", "Health check", transport=limited)
         self.assertEqual(len(self.calls), 1)
         ledger_path = self.home / "state/open-notify/ledger.json"
+        cooldown_path = self.home / "state/open-notify/cooldown.json"
         for _ in range(2):
             ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
             next(iter(ledger.values()))["next_attempt"] = 0
             ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+            cooldown = json.loads(cooldown_path.read_text(encoding="utf-8"))
+            cooldown["until"] = 0
+            cooldown_path.write_text(json.dumps(cooldown), encoding="utf-8")
             result = notify.send_event(self.home, "open-system", "run", "Health check", transport=limited)
         self.assertEqual(result["status"], "failed")
         self.assertEqual(len(self.calls), 3)
+
+    def test_rate_limit_cooldown_defers_other_event_keys(self):
+        def limited(token, payload):
+            self.calls.append(payload)
+            return {"ok": False, "error_code": 429, "parameters": {"retry_after": 100}}
+
+        first = notify.send_event(self.home, "open-system", "first", "Health check", transport=limited)
+        second = notify.send_event(self.home, "open-box", "second", "Health check", transport=limited)
+
+        self.assertEqual(first["status"], "retry")
+        self.assertEqual(second, {"status": "retry", "project": "open-box", "deferred": True})
+        self.assertEqual(len(self.calls), 1)
+
+    def test_global_cooldown_records_deferred_event_before_return(self):
+        def limited(token, payload):
+            self.calls.append(payload)
+            return {"ok": False, "error_code": 429, "parameters": {"retry_after": 100}}
+
+        notify.send_event(self.home, "open-system", "first", "Health check", transport=limited)
+        deferred = notify.send_event(
+            self.home, "open-box", "second", "Box health check", transport=limited,
+        )
+
+        ledger = json.loads(
+            (self.home / "state/open-notify/ledger.json").read_text(encoding="utf-8")
+        )
+        deferred_entries = [entry for entry in ledger.values() if entry["project"] == "open-box"]
+        self.assertEqual(deferred, {"status": "retry", "project": "open-box", "deferred": True})
+        self.assertEqual(len(deferred_entries), 1)
+        self.assertEqual(deferred_entries[0]["status"], "retry")
+        self.assertEqual(deferred_entries[0]["attempts"], 0)
+        self.assertGreater(deferred_entries[0]["next_attempt"], time.time())
+        conflict = notify.send_event(
+            self.home, "open-box", "second", "Changed box health", transport=limited,
+        )
+        self.assertEqual(conflict["status"], "conflict")
+        self.assertEqual(len(self.calls), 1)
 
     def test_restricted_payload_and_unknown_project_rejected(self):
         with self.assertRaises(ValueError):
@@ -92,11 +195,59 @@ class NotifyTests(unittest.TestCase):
             notify.send_event(self.home, "open-system", "run", "password=do-not-persist")
         self.assertFalse((self.home / "state").exists())
 
+    def test_secret_bearing_query_parameters_rejected_before_persisting(self):
+        samples = [
+            "OAuth callback https://example.invalid/cb?code=opaque-short-value",
+            "Signed file https://example.invalid/file?x=1&signature=opaque-short-value",
+            "Encoded key https://example.invalid/file?x%2Damz%2Dsignature=opaque-short-value",
+            "Google signed file https://example.invalid/file?X-Goog-Signature=opaque-short-value",
+            "Azure signed file https://example.invalid/file?sv=1&sig=opaque-short-value",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample), self.assertRaises(ValueError):
+                notify.send_event(self.home, "open-system", "query", sample, transport=self.success)
+        self.assertFalse((self.home / "state").exists())
+        result = notify.send_event(
+            self.home, "open-system", "public-query",
+            "Metrics https://example.invalid/report?page=3&session_id=public",
+            transport=self.success,
+        )
+        self.assertEqual(result["status"], "delivered")
+
     def test_ledger_contains_fingerprint_not_message_text(self):
         notify.send_event(self.home, "open-system", "run", "Synthetic diagnostic", transport=self.success)
         content = (self.home / "state/open-notify/ledger.json").read_text(encoding="utf-8")
         self.assertNotIn("Synthetic diagnostic", content)
         self.assertNotIn("synthetic-test-only", content)
+
+    def test_atomic_save_fsyncs_parent_directory(self):
+        observed = []
+        real_fsync = os.fsync
+
+        def record_fsync(descriptor):
+            observed.append(stat.S_ISDIR(os.fstat(descriptor).st_mode))
+            real_fsync(descriptor)
+
+        with mock.patch.object(notify.os, "fsync", side_effect=record_fsync):
+            notify.atomic_save(self.home / "ledger.json", {"entry": {"status": "uncertain"}})
+
+        self.assertIn(True, observed)
+
+    @unittest.skipIf(os.name == "nt", "POSIX directory durability")
+    def test_new_state_hierarchy_is_synced_before_transport(self):
+        opened_directories = []
+        real_open = os.open
+
+        def record_open(path, flags, *args, **kwargs):
+            if flags & getattr(os, "O_DIRECTORY", 0):
+                opened_directories.append(Path(path))
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(notify.os, "open", side_effect=record_open):
+            notify.send_event(self.home, "open-system", "durable", "Health check", transport=self.success)
+
+        self.assertIn(self.home, opened_directories)
+        self.assertIn(self.home / "state", opened_directories)
 
     def test_provider_injected_environment_without_env_file(self):
         (self.home / ".env").unlink()
@@ -115,10 +266,20 @@ class NotifyTests(unittest.TestCase):
                 {"id": "disabled", "enabled": False, "last_status": "error"}]
         (self.home / "cron/jobs.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8-sig")
         config = self.home / "portfolio.json"
-        config.write_text(json.dumps({"projects": {}}), encoding="utf-8")
+        self.write_portfolio(config)
         with mock.patch.object(notify, "send_event", return_value={"status": "delivered"}) as sender:
             notify.reconcile(self.home, config)
         self.assertIn("1 enabled jobs", sender.call_args.args[3])
+
+    def test_scheduler_tolerates_idless_error_records(self):
+        (self.home / "cron").mkdir()
+        jobs = [{"last_status": "error"}, {"id": "known", "last_status": "error"}]
+        (self.home / "cron/jobs.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+        config = self.home / "portfolio.json"
+        self.write_portfolio(config)
+        with mock.patch.object(notify, "send_event", return_value={"status": "delivered"}) as sender:
+            notify.reconcile(self.home, config)
+        self.assertIn("2 enabled jobs", sender.call_args.args[3])
 
     def test_other_provider_credentials_rejected_without_state(self):
         samples = ["xoxb-" + "A" * 20, "xapp-1-" + "A" * 20,
@@ -184,7 +345,7 @@ class NotifyTests(unittest.TestCase):
             json.loads(content)
         (self.home / "cron/jobs.json").write_text(content, encoding="utf-8")
         config = self.home / "portfolio.json"
-        config.write_text('{"projects":{}}', encoding="utf-8")
+        self.write_portfolio(config)
         with mock.patch.object(notify, "send_event", return_value={"status": "delivered"}) as sender:
             notify.reconcile(self.home, config)
         self.assertIn("1 enabled jobs", sender.call_args.args[3])

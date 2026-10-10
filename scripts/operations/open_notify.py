@@ -13,11 +13,50 @@ import re
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import unquote_plus
 
-PROJECTS = {"open-system": 185, "open-box": 186, "open-connect": 187,
-            "open-tgate": 188, "open-teleset": 189}
-CHAT_ID = -1004449684934
-BOT_ID = 8902902175
+DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config" / "open-system-portfolio.json"
+
+
+def load_routing(config: Path) -> dict:
+    portfolio = json.loads(config.read_text(encoding="utf-8"))
+    telegram = portfolio.get("telegram", {})
+    chat_id = telegram.get("chat_id")
+    bot_id = telegram.get("expected_bot_id")
+    if not isinstance(chat_id, int) or not isinstance(bot_id, int) or telegram.get("no_broadcast") is not True:
+        raise ValueError("Bounded Telegram routing configuration required")
+    projects = {}
+    topic_ids = set()
+    for project, settings in portfolio.get("projects", {}).items():
+        topic_id = settings.get("topic_id")
+        if topic_id is not None:
+            if not isinstance(topic_id, int):
+                raise ValueError("Project topic IDs must be integers")
+            if topic_id in topic_ids:
+                raise ValueError("Project topic IDs must be unique")
+            topic_ids.add(topic_id)
+            projects[project] = topic_id
+    return {"chat_id": chat_id, "bot_id": bot_id, "projects": projects, "portfolio": portfolio}
+
+
+def resolve_config(home: Path, config: Path | None) -> Path:
+    if config is not None:
+        return config
+    installed = home / "config" / "open-system-portfolio.json"
+    if installed.exists():
+        return installed
+    if DEFAULT_CONFIG.exists():
+        return DEFAULT_CONFIG
+    raise ValueError("Open Notify portfolio configuration missing")
+
+
+# Compatibility aliases are derived from the canonical manifest, never copied.
+# The deployed helper can live outside the repository and load /opt/data/config
+# at call time, so importing it must not require the source-tree manifest.
+_DEFAULT_ROUTING = load_routing(DEFAULT_CONFIG) if DEFAULT_CONFIG.exists() else {}
+PROJECTS = _DEFAULT_ROUTING.get("projects", {})
+CHAT_ID = _DEFAULT_ROUTING.get("chat_id")
+BOT_ID = _DEFAULT_ROUTING.get("bot_id")
 
 # Keep provider-prefix coverage aligned with agent/redact.py.
 CREDENTIAL_PREFIX_PATTERNS = [
@@ -92,6 +131,13 @@ SECRET = re.compile(
     + r"|[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/]{8,}@"
     + r"|eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}"
 )
+SENSITIVE_QUERY_PARAMS = frozenset({
+    "access_token", "refresh_token", "id_token", "token", "api_key",
+    "apikey", "client_secret", "password", "auth", "jwt", "session",
+    "secret", "key", "code", "signature", "sig", "x-amz-signature",
+    "x-goog-signature", "x-ms-signature",
+})
+QUERY_PARAM = re.compile(r"[?&]([^\s&#=]+)=")
 
 class DeliveryBusyError(OSError):
     """Another delivery owns the state lock; no event was attempted."""
@@ -136,7 +182,7 @@ def delivery_lock(path: Path):
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def load_token(home: Path) -> str:
+def load_token(home: Path, expected_bot_id: int) -> str:
     token = os.environ.get("TELEGRAM_PROJECT_BOT_TOKEN") or os.environ.get("OPEN_NOTIFY_BOT_TOKEN", "")
     if not token:
         path = home / ".env"
@@ -148,7 +194,7 @@ def load_token(home: Path) -> str:
                 if sep and key in ("TELEGRAM_PROJECT_BOT_TOKEN", "OPEN_NOTIFY_BOT_TOKEN"):
                     aliases[key] = value.strip().strip("\"'")
             token = aliases.get("TELEGRAM_PROJECT_BOT_TOKEN") or aliases.get("OPEN_NOTIFY_BOT_TOKEN", "")
-    if not token.startswith(str(BOT_ID) + ":"):
+    if not token.startswith(str(expected_bot_id) + ":"):
         raise ValueError("Open Notify credential missing or bot identity mismatch")
     return token
 
@@ -174,6 +220,28 @@ def api_call(token: str, payload: dict) -> dict:
         return {"ok": False, "ambiguous": True}
 
 
+def fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def ensure_private_directory(path: Path) -> None:
+    missing = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o700, exist_ok=True)
+        fsync_directory(directory.parent)
+
+
 def atomic_save(path: Path, data: dict) -> None:
     temp = path.with_suffix(".tmp")
     descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -182,11 +250,17 @@ def atomic_save(path: Path, data: dict) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temp, path)
+    fsync_directory(path.parent)
 
 
 def send_event(home: Path, project: str, event_key: str, summary: str,
-               classification: str = "operational", transport=api_call) -> dict:
-    if project not in PROJECTS:
+               classification: str = "operational", transport=api_call,
+               config: Path | None = None, routing: dict | None = None) -> dict:
+    routing = routing or load_routing(resolve_config(home, config))
+    projects = routing["projects"]
+    chat_id = routing["chat_id"]
+    bot_id = routing["bot_id"]
+    if project not in projects:
         raise ValueError("Unknown project; no fallback destination")
     if classification not in ("operational", "client-safe"):
         raise ValueError("Restricted records cannot be delivered to shared topics")
@@ -195,14 +269,17 @@ def send_event(home: Path, project: str, event_key: str, summary: str,
     text = "Open Notify • " + project + "\n" + summary
     if len(text.encode("utf-16-le")) // 2 > 4096:
         raise ValueError("Outbound message exceeds Telegram UTF-16 limit")
-    if SECRET.search(summary):
+    if SECRET.search(summary) or any(
+            unquote_plus(match).casefold() in SENSITIVE_QUERY_PARAMS
+            for match in QUERY_PARAM.findall(summary)):
         raise ValueError("Credential-like content rejected")
-    token = load_token(home)
+    token = load_token(home, bot_id)
     state = home / "state" / "open-notify"
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ensure_private_directory(state)
     key = hashlib.sha256((project + ":" + event_key).encode()).hexdigest()
     digest = hashlib.sha256(summary.encode()).hexdigest()
     ledger_path = state / "ledger.json"
+    cooldown_path = state / "cooldown.json"
     with delivery_lock(state / "delivery.lock"):
         ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else {}
         entry = ledger.get(key, {})
@@ -215,6 +292,23 @@ def send_event(home: Path, project: str, event_key: str, summary: str,
                 return {"status": "retry", "project": project, "deferred": True}
             if entry.get("attempts", 0) >= 3:
                 return {"status": "failed", "project": project}
+        cooldown = json.loads(cooldown_path.read_text(encoding="utf-8")) if cooldown_path.exists() else {}
+        cooldown_until = cooldown.get("until", 0)
+        if (cooldown.get("bot_id") == bot_id and cooldown.get("chat_id") == chat_id
+                and cooldown_until > time.time()):
+            if not entry:
+                entry = {"digest": digest, "status": "retry", "attempts": 0,
+                         "project": project, "updated_at": time.time(),
+                         "next_attempt": cooldown_until}
+            else:
+                entry.update(status="retry", updated_at=time.time(),
+                             next_attempt=max(entry.get("next_attempt", 0), cooldown_until))
+            ledger[key] = entry
+            ledger = dict(sorted(
+                ledger.items(), key=lambda pair: pair[1]["updated_at"],
+            )[-500:])
+            atomic_save(ledger_path, ledger)
+            return {"status": "retry", "project": project, "deferred": True}
         attempts = entry.get("attempts", 0) + 1
         # Persist before network I/O. A crash after Telegram accepts a message is
         # uncertain; future invocations must not resend it blindly.
@@ -224,23 +318,29 @@ def send_event(home: Path, project: str, event_key: str, summary: str,
         atomic_save(ledger_path, ledger)
         try:
             result = transport(token, {
-                "chat_id": CHAT_ID, "message_thread_id": PROJECTS[project],
+                "chat_id": chat_id, "message_thread_id": projects[project],
                 "text": text,
                 "disable_notification": True, "link_preview_options": {"is_disabled": True},
             })
         except Exception:
             result = {"ok": False, "ambiguous": True}
         message = result.get("result", {})
-        if (result.get("ok") and message.get("chat", {}).get("id") == CHAT_ID
-                and message.get("message_thread_id") == PROJECTS[project]):
+        if (result.get("ok") and message.get("chat", {}).get("id") == chat_id
+                and message.get("message_thread_id") == projects[project]):
             entry.update(status="delivered", message_id=message.get("message_id"))
-        elif result.get("error_code") == 429 and attempts < 3:
+        elif result.get("error_code") == 429:
             delay = result.get("parameters", {}).get("retry_after", 60)
             try:
                 delay = max(1, min(int(delay), 86400))
             except (ValueError, TypeError):
                 delay = 60
-            entry.update(status="retry", next_attempt=time.time() + delay)
+            next_attempt = time.time() + delay
+            atomic_save(cooldown_path, {"bot_id": bot_id, "chat_id": chat_id,
+                                        "until": next_attempt})
+            if attempts < 3:
+                entry.update(status="retry", next_attempt=next_attempt)
+            else:
+                entry["status"] = "failed"
         elif result.get("ok") or result.get("ambiguous") or result.get("error_code", 0) >= 500:
             entry["status"] = "uncertain"
         else:
@@ -267,11 +367,12 @@ def probe(url: str, expected_body: str | None = None) -> dict:
 
 
 def reconcile(home: Path, config: Path) -> list[dict]:
-    portfolio = json.loads(config.read_text(encoding="utf-8"))
+    routing = load_routing(config)
+    portfolio = routing["portfolio"]
     outcomes = []
     for project, settings in portfolio["projects"].items():
         url = settings.get("health_url")
-        if project not in PROJECTS or not url:
+        if project not in routing["projects"] or not url:
             continue
         observation = probe(url, settings.get("expected_body"))
         label = "REACHABLE" if observation["http"] == 200 and observation["body_ok"] else "CHECK REQUIRED"
@@ -280,17 +381,20 @@ def reconcile(home: Path, config: Path) -> list[dict]:
         fingerprint = hashlib.sha256(json.dumps(observation, sort_keys=True).encode()).hexdigest()[:20]
         # Local day prevents indefinite silence after a long stable interval.
         period = time.strftime("%Y-%m-%d", time.gmtime())
-        outcomes.append(send_event(home, project, "health:" + period + ":" + fingerprint, summary))
+        outcomes.append(send_event(home, project, "health:" + period + ":" + fingerprint,
+                                   summary, routing=routing))
     jobs_file = home / "cron" / "jobs.json"
     if jobs_file.exists():
         jobs_data = json.loads(jobs_file.read_text(encoding="utf-8-sig"), strict=False)
         jobs = jobs_data.get("jobs", []) if isinstance(jobs_data, dict) else jobs_data
-        failed = sorted(str(job["id"]) for job in jobs if job.get("enabled", True) and job.get("last_status") == "error")
+        failed = sorted(str(job.get("id") or "missing-id") for job in jobs
+                        if job.get("enabled", True) and job.get("last_status") == "error")
         digest = hashlib.sha256(json.dumps(failed).encode()).hexdigest()[:20]
         period = time.strftime("%Y-%m-%d", time.gmtime())
         summary = "Scheduler audit: " + str(len(failed)) + " enabled jobs last reported an error."
         summary += "\nFailure details remain in the private execution ledger; no automatic credential rotation."
-        outcomes.append(send_event(home, "open-system", "scheduler:" + period + ":" + digest, summary))
+        outcomes.append(send_event(home, "open-system", "scheduler:" + period + ":" + digest,
+                                   summary, routing=routing))
     return outcomes
 
 
@@ -299,7 +403,7 @@ def main() -> int:
     parser.add_argument("--home", type=Path, default=Path(os.environ.get("HERMES_HOME", "/opt/data")))
     parser.add_argument("--config", type=Path)
     parser.add_argument("--reconcile", action="store_true")
-    parser.add_argument("--project", choices=PROJECTS)
+    parser.add_argument("--project")
     parser.add_argument("--event-key")
     parser.add_argument("--summary")
     parser.add_argument("--classification", choices=("operational", "client-safe"), default="operational")
@@ -313,7 +417,8 @@ def main() -> int:
         else:
             if not args.project or not args.event_key or not args.summary:
                 parser.error("--project, --event-key and --summary required")
-            result = send_event(args.home, args.project, args.event_key, args.summary, args.classification)
+            result = send_event(args.home, args.project, args.event_key, args.summary,
+                                args.classification, config=args.config)
             ok = result["status"] in ("delivered", "retry")
         print(json.dumps(result))
         return 0 if ok else 1

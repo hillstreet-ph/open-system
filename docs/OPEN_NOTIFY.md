@@ -22,18 +22,26 @@ stay in their existing restricted sources.
 
 ```bash
 python scripts/operations/open_notify.py --home /opt/data \
+  --config config/open-system-portfolio.json \
   --project open-system --event-key deploy:COMMIT_SHA \
   --summary "Deployment validation completed; see the linked GitHub run."
 ```
 
 Use a real source/run identifier for the event key. The same key and payload
 sends once within the retained 500-event ledger. Reusing a key for different
-content returns a conflict. Explicit Telegram 429 responses defer and retry
+content returns a conflict. Explicit Telegram 429 responses set a persisted
+bot/chat-wide cooldown before other event keys can send and retry each event
 at most three times; respect retry_after. Timeout, interrupted delivery,
 wrong destination and server errors remain uncertain and are never blindly
 resent. Inspect Telegram and the private ledger before resolving uncertainty.
 
-Credential-like text is rejected; callers must supply only approved operational
+The portfolio manifest is the sole routing source for the bot identity, chat,
+and project topics. A null topic has no route and never falls back or broadcasts.
+Ledger replacements and newly created state directories are fsynced before
+network delivery so a host crash cannot silently discard the pre-send record.
+
+Credential-like text, including opaque credentials in sensitive URL query
+parameters, is rejected; callers must supply only approved operational
 or client-safe summaries. The code does not infer data classification from
 natural language. Private record content is never an acceptable summary.
 The local ledger stores fingerprints and delivery metadata, not message text.
@@ -97,12 +105,15 @@ tests, reviews and exact-head checks. Cap repair at three attempts.
 
 ## Validation
 
-Twenty-one regression tests cover exact thread routing, deduplication, changed-content
+Thirty regression tests cover manifest-sourced routing, unique project-topic ownership,
+deduplication, changed-content
 conflicts, timeout uncertainty, wrong-thread uncertainty, bounded 429 retries,
-restricted/unknown destinations, credential rejection, fingerprint-only storage
+durable cross-event cooldown deferral, restricted/unknown destinations, credential and
+vendor-signed-query rejection,
+fingerprint-only storage and directory durability,
 bot identity, injected environment credentials, fine-grained PAT rejection,
-legacy/BOM scheduler state, provider-token families, UTF-16 message limits
-Windows lock contention beyond ten seconds, and opaque credential assignments/auth URLs/JWTs, bot-prefixed tokens, authenticated
+legacy/BOM/id-less scheduler state, provider-token families, UTF-16 message limits,
+Windows lock contention beyond ten seconds, opaque credential assignments/auth URLs/JWTs, bot-prefixed tokens, authenticated
 transport/database URLs, legacy dotenv aliases and tolerant scheduler controls. Run:
 
 ```bash
