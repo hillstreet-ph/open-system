@@ -504,6 +504,18 @@ class TestDelegationCleanup:
                 child_finished.set()
 
         child.run_conversation.side_effect = run_conversation
+
+        # This case exercises timeout of an active turn, not slow worker startup.
+        # Begin the timeout only after the mocked child owns its turn.
+        import tools.daemon_pool as daemon_pool
+
+        class StartedChildExecutor(daemon_pool.DaemonThreadPoolExecutor):
+            def submit(self, fn, *args, **kwargs):
+                future = super().submit(fn, *args, **kwargs)
+                assert child_started.wait(timeout=5), "Child failed to start its turn"
+                return future
+
+        monkeypatch.setattr(daemon_pool, "DaemonThreadPoolExecutor", StartedChildExecutor)
         try:
             result = _run_single_child(
                 task_index=0,

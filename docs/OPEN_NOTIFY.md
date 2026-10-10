@@ -101,9 +101,9 @@ Twenty-one regression tests cover exact thread routing, deduplication, changed-c
 conflicts, timeout uncertainty, wrong-thread uncertainty, bounded 429 retries,
 restricted/unknown destinations, credential rejection, fingerprint-only storage
 bot identity, injected environment credentials, fine-grained PAT rejection,
-legacy/BOM/control-character scheduler state, provider-token families, UTF-16 message limits,
-Windows lock contention beyond ten seconds, legacy dotenv aliases, bot-prefixed tokens,
-and opaque credential assignments/auth/transport URLs/JWTs. Run:
+legacy/BOM scheduler state, provider-token families, UTF-16 message limits
+Windows lock contention beyond ten seconds, and opaque credential assignments/auth URLs/JWTs, bot-prefixed tokens, authenticated
+transport/database URLs, legacy dotenv aliases and tolerant scheduler controls. Run:
 
 ```bash
 python tests/unit/test_open_notify.py

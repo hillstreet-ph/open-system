@@ -82,14 +82,15 @@ CREDENTIAL_PREFIX_PATTERNS = [
     r"pk-lf-[A-Za-z0-9\-]{8,}",         # Langfuse public key (sk-lf- already covered by sk- pattern)
 ]
 SECRET = re.compile(
-    r"(?i:\b(?:bot)?\d{8,12}:[A-Za-z0-9_-]{30,}\b)|"
+    r"(?:bot)?\d{8,}:[A-Za-z0-9_-]{30,}|"
     r"\b(?:github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{12,})|"
     r"-----BEGIN .*PRIVATE KEY-----|"
     r"(?i:bearer\s+\S+|password\s*[:=]|token\s*[:=]|secret\s*[:=])"
     + "|" + "|".join(CREDENTIAL_PREFIX_PATTERNS)
     + r"|(?i:\b[\w.-]*(?:api[_.-]?key|key|password|passwd|pass|pw|token|secret|credential|auth)[\w.-]*[\"\']?\s*[:=])"
-    + r"|(?i:[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@)"
-    + r"|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    + r"|[A-Za-z][A-Za-z0-9+.-]*://[^\s:]+:[^\s@]+@"
+    + r"|[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/]{8,}@"
+    + r"|eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}"
 )
 
 class DeliveryBusyError(OSError):
@@ -140,13 +141,13 @@ def load_token(home: Path) -> str:
     if not token:
         path = home / ".env"
         if path.exists():
-            dotenv = {}
+            aliases = {}
             for line in path.read_text(encoding="utf-8").splitlines():
                 key, sep, value = line.partition("=")
-                key = key.strip()
+                key = key.strip().removeprefix("export ")
                 if sep and key in ("TELEGRAM_PROJECT_BOT_TOKEN", "OPEN_NOTIFY_BOT_TOKEN"):
-                    dotenv[key] = value.strip().strip("\"'")
-            token = dotenv.get("TELEGRAM_PROJECT_BOT_TOKEN") or dotenv.get("OPEN_NOTIFY_BOT_TOKEN", "")
+                    aliases[key] = value.strip().strip("\"'")
+            token = aliases.get("TELEGRAM_PROJECT_BOT_TOKEN") or aliases.get("OPEN_NOTIFY_BOT_TOKEN", "")
     if not token.startswith(str(BOT_ID) + ":"):
         raise ValueError("Open Notify credential missing or bot identity mismatch")
     return token
@@ -282,13 +283,7 @@ def reconcile(home: Path, config: Path) -> list[dict]:
         outcomes.append(send_event(home, project, "health:" + period + ":" + fingerprint, summary))
     jobs_file = home / "cron" / "jobs.json"
     if jobs_file.exists():
-        jobs_text = jobs_file.read_text(encoding="utf-8-sig")
-        try:
-            jobs_data = json.loads(jobs_text)
-        except json.JSONDecodeError:
-            # Match cron/jobs.py::_parse_jobs_file for supported legacy files
-            # containing unescaped control characters.
-            jobs_data = json.loads(jobs_text, strict=False)
+        jobs_data = json.loads(jobs_file.read_text(encoding="utf-8-sig"), strict=False)
         jobs = jobs_data.get("jobs", []) if isinstance(jobs_data, dict) else jobs_data
         failed = sorted(str(job["id"]) for job in jobs if job.get("enabled", True) and job.get("last_status") == "error")
         digest = hashlib.sha256(json.dumps(failed).encode()).hexdigest()[:20]
