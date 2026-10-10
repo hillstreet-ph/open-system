@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "organization_id": "e1a3d54f-0f55-4237-92b7-0d7c4cde39af",
+  "workspace_id": "b46caede-d759-48db-9ac7-69d4a9c91c1a",
+  "brain": {
+    "mode": "federated-source-linked-catalog",
+    "control_plane": "https://open-connect.site/mcp",
+    "runtime_access": "blocked-http-403-2026-10-10",
+    "knowledge_contract": [
+      "organization_id",
+      "project_id",
+      "source_id",
+      "version",
+      "visibility",
+      "owner",
+      "updated_at"
+    ],
+    "secret_values": "forbidden",
+    "private_finance": "restricted-source-only",
+    "credentials": "provider-managed-opaque-references"
+  },
+  "telegram": {
+    "chat_id": -1004449684934,
+    "token_env": "TELEGRAM_PROJECT_BOT_TOKEN",
+    "expected_bot_id": 8902902175,
+    "default_visibility": "operational",
+    "no_broadcast": true
+  },
+  "projects": {
+    "open-system": {
+      "project_id": "50ad77bc-400b-419a-814a-7a8647e4338a",
+      "repo": "hillstreet-ph/open-system",
+      "data_project": "open-platform",
+      "schema": "open_system",
+      "topic_id": 185,
+      "health_url": "https://open-system.space",
+      "boundary_status": "schema-reconciliation-issue-39"
+    },
+    "open-box": {
+      "project_id": "0d85c53f-1823-4afc-848c-f91f059fc21b",
+      "repo": "hillstreet-ph/open-box",
+      "data_project": "open-platform",
+      "schema": "open_box",
+      "topic_id": 186,
+      "health_url": "https://open-box.space/ping",
+      "expected_body": "pong"
+    },
+    "open-connect": {
+      "project_id": "48e18229-a549-47ba-ad1a-04c49e853099",
+      "repo": "hillstreet-ph/open-connect",
+      "data_project": "open-platform",
+      "schema": "open_connect",
+      "topic_id": 187,
+      "health_url": "https://open-connect.site/api/v1/health"
+    },
+    "open-tgate": {
+      "project_id": "d694afc0-9200-4f4b-854f-8d27c01d9d87",
+      "repo": "hillstreet-ph/open-tgate",
+      "data_project": "open-operations",
+      "schema": "open_tgate",
+      "topic_id": 188,
+      "health_url": "https://open-tgate.site"
+    },
+    "open-teleset": {
+      "project_id": "8d3360d4-1f7a-4f96-bce7-06d0e9fcbaa4",
+      "repo": "hillstreet-ph/open-teleset",
+      "data_project": "open-operations",
+      "schema": "open_teleset",
+      "topic_id": 189,
+      "health_url": "https://open-teleset.site"
+    },
+    "open-kobeplay": {
+      "project_id": "b76d47b1-dd3f-4442-8807-c21cb4b15cff",
+      "repo": "hillstreet-ph/open-kobeplay",
+      "data_project": "open-operations",
+      "schema": "open_kobeplay",
+      "topic_id": null,
+      "visibility": "restricted-client-source-boundary",
+      "health_url": null
+    }
+  },
+  "autonomy": {
+    "max_repair_attempts": 3,
+    "engineering_source": "github",
+    "operational_tasks": "existing-hermes-kanban",
+    "routine_approval": "automatic-with-tests-and-provider-controls",
+    "protected_operations": "respect-enforced-gates",
+    "schedule": "reuse-existing"
+  },
+  "capabilities": {
+    "verified": [
+      "chatgpt-open-connect-status",
+      "chatgpt-composio-github",
+      "chatgpt-open-tgate-read",
+      "open-system-zeabur-execute",
+      "open-notify-topics-185-189"
+    ],
+    "blocked": [
+      "runtime-open-connect-http-403",
+      "runtime-composio-secret-not-configured",
+      "cross-project-schema-reconciliation",
+      "postgres-brain-not-created"
+    ],
+    "plugin_endpoint": "https://open-connect.site/mcp",
+    "legacy_chatgpt_routes": "unverified-do-not-use"
+  }
+}
