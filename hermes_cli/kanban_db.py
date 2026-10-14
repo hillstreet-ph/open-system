@@ -3179,6 +3179,7 @@ def create_task(
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
+    initial_block_reason: Optional[str] = None,
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
@@ -3191,6 +3192,10 @@ def create_task(
     If ``triage=True``, status is forced to ``triage`` regardless of
     parents — a specifier/triager is expected to promote the task to
     ``todo`` once the spec is fleshed out.
+
+    ``initial_block_reason`` with ``initial_status="blocked"`` atomically
+    records an explicit sticky block requiring operator unblocking. Without
+    a reason, existing dependency-recovery behavior is preserved.
 
     If ``idempotency_key`` is provided and a non-archived task with the
     same key already exists, returns the existing task's id instead of
@@ -3235,6 +3240,10 @@ def create_task(
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
         )
+    if initial_block_reason is not None:
+        if (initial_status != "blocked" or not isinstance(initial_block_reason, str)
+                or not initial_block_reason.strip()):
+            raise ValueError("initial_block_reason requires blocked status and a non-empty reason")
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
@@ -3554,6 +3563,15 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if initial_block_reason is not None:
+                    conn.execute(
+                        "UPDATE tasks SET block_kind = 'needs_input' WHERE id = ?",
+                        (task_id,),
+                    )
+                    _append_event(
+                        conn, task_id, "blocked",
+                        {"reason": initial_block_reason.strip(), "kind": "needs_input"},
+                    )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:
