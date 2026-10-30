@@ -31,7 +31,9 @@ jobs:
             test -f /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-mcp-tunnel
             grep -q "hermes mcp-serve" /etc/s6-overlay/s6-rc.d/hermes-mcp-tunnel/run
             test -f /opt/hermes/plugins/mcp-serve/plugin.yaml
-            /opt/hermes/.venv/bin/python -c "import mcp.server"
+            test -f /opt/hermes/plugins/spotify/plugin.yaml
+            test -f /opt/hermes/plugins/langfuse/plugin.yaml
+            /opt/hermes/.venv/bin/python -c "import mcp.server, langfuse, httpx, cryptography"
             /opt/hermes/.venv/bin/hermes --version > /tmp/version.txt
             grep -q "v0.22.5" /tmp/version.txt
             mkdir -p /tmp/hermes-test
@@ -39,3 +41,16 @@ jobs:
             HOME=/tmp/hermes-test HERMES_HOME=/tmp/hermes-test /opt/hermes/.venv/bin/hermes mcp-serve --help > /tmp/mcp-help.txt
             grep -q "stdio MCP server" /tmp/mcp-help.txt
           '
+      - name: Publish tested image under a unique commit tag
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DOCKERHUB_USERNAME" && test -n "$DOCKERHUB_TOKEN"
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+          image="hillstreet/open-system:v0.22.5-compat-${GITHUB_SHA}"
+          docker tag open-system-compat:test "$image"
+          docker push "$image"
+          docker logout
