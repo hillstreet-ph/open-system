@@ -9,10 +9,16 @@ COPY --from=legacy /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-mcp-tunnel /et
 # The Hermes MCP server moved from core into this official plugin in v0.22.
 ARG PLUGIN_COMMIT=6389dd08c1e485db708688c69e42c2b7a7360f4e
 RUN set -eu; \
-    mkdir -p /opt/hermes/plugins/mcp-serve; \
+    mkdir -p /opt/hermes/plugins/mcp-serve /opt/hermes/plugins/spotify /opt/hermes/plugins/langfuse; \
     curl -fsSL --retry 3 "https://github.com/NousResearch/hermes-official-plugins/archive/${PLUGIN_COMMIT}.tar.gz" -o /tmp/mcp-plugin.tar.gz; \
     tar -xzf /tmp/mcp-plugin.tar.gz --strip-components=2 -C /opt/hermes/plugins/mcp-serve "hermes-official-plugins-${PLUGIN_COMMIT}/mcp-serve"; \
+    tar -xzf /tmp/mcp-plugin.tar.gz --strip-components=2 -C /opt/hermes/plugins/spotify "hermes-official-plugins-${PLUGIN_COMMIT}/spotify"; \
+    tar -xzf /tmp/mcp-plugin.tar.gz --strip-components=2 -C /opt/hermes/plugins/langfuse "hermes-official-plugins-${PLUGIN_COMMIT}/langfuse"; \
+    /opt/hermes/.venv/bin/python -m ensurepip; \
+    /opt/hermes/.venv/bin/python -m pip install --no-cache-dir "langfuse==4.15.2"; \
     rm /tmp/mcp-plugin.tar.gz; \
     sed -i 's/hermes mcp serve/hermes mcp-serve/' /etc/s6-overlay/s6-rc.d/hermes-mcp-tunnel/run; \
     test -f /opt/hermes/plugins/mcp-serve/plugin.yaml; \
+    test -f /opt/hermes/plugins/spotify/plugin.yaml; \
+    test -f /opt/hermes/plugins/langfuse/plugin.yaml; \
     grep -q 'hermes mcp-serve' /etc/s6-overlay/s6-rc.d/hermes-mcp-tunnel/run
