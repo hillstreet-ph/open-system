@@ -1,0 +1,56 @@
+#
+# docker-compose.zeabur.yml — Hermes Agent cloud server for Zeabur
+#
+# Deploys the Hermes gateway + headless `serve` backend so your macOS
+# Hermes Desktop can connect as a remote/cloud client.
+#
+# Usage (on the Zeabur service):
+#   HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose -f docker-compose.zeabur.yml up -d
+#
+# Required secrets (set in Zeabur Environment Variables):
+#   API_SERVER_KEY   — strong bearer token for the remote API server / desktop auth
+#   HERMES_HOME      — optional, defaults to /opt/data
+#
+# The macOS desktop connects to:  https://<zeabur-service>.zeabur.app
+# (Zeabur provides TLS termination; Hermes listens on plain HTTP internally.)
+#
+
+services:
+  gateway:
+    build: .
+    image: hermes-agent
+    container_name: hermes-gateway
+    restart: unless-stopped
+    # Zeabur routes public HTTP to the service port; bind 0.0.0.0 so the
+    # platform load balancer can reach the gateway + api_server.
+    network_mode: host
+    volumes:
+      - ~/.hermes:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+      - HERMES_HOME=/opt/data
+      # OpenAI-compatible API server exposed to the internet — key is MANDATORY.
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_PORT=8642
+      - API_SERVER_KEY=${API_SERVER_KEY}
+      # Run the gateway (Telegram/Discord/Slack/etc. adapters) so the cloud
+      # server can receive messages independently of the desktop.
+      command: ["gateway", "run"]
+
+  serve:
+    image: hermes-agent
+    container_name: hermes-serve
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    network_mode: host
+    volumes:
+      - ~/.hermes:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+      - HERMES_HOME=/opt/data
+    # Headless JSON-RPC/WebSocket backend the macOS desktop app connects to
+    # as a remote/cloud client. Exposes 0.0.0.0 so Zeabur's LB can reach it.
+    command: ["serve", "--host", "0.0.0.0", "--port", "9119"]
