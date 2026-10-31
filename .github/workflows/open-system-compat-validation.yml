@@ -1,0 +1,59 @@
+name: Validate Open-System Hermes upgrade
+
+on:
+  push:
+    branches: [codex/hermes-v0225-compat]
+    paths:
+      - deploy/open-system-compat.Dockerfile
+      - .github/workflows/open-system-compat-validation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          sparse-checkout: deploy/open-system-compat.Dockerfile
+          sparse-checkout-cone-mode: false
+      - name: Build compatibility image
+        run: docker build -f deploy/open-system-compat.Dockerfile -t open-system-compat:test .
+      - name: Verify release, tunnel and plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /bin/sh open-system-compat:test -c '
+            set -eu
+            test -x /usr/local/bin/tunnel-client
+            test -f /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-mcp-tunnel
+            grep -q "hermes mcp-serve" /etc/s6-overlay/s6-rc.d/hermes-mcp-tunnel/run
+            test -f /opt/hermes/plugins/mcp-serve/plugin.yaml
+            test -f /opt/hermes/plugins/spotify/plugin.yaml
+            test -f /opt/hermes/plugins/langfuse/plugin.yaml
+            /opt/hermes/.venv/bin/hermes --version > /tmp/version.txt
+            grep -q "v0.22.5" /tmp/version.txt
+            mkdir -p /tmp/hermes-test
+            printf "plugins:\\n  enabled:\\n    - mcp-serve\\n    - spotify\\n    - langfuse\\n" > /tmp/hermes-test/config.yaml
+            export HOME=/tmp/hermes-test HERMES_HOME=/tmp/hermes-test
+            /opt/hermes/.venv/bin/hermes pm install venv
+            /opt/hermes/.venv/bin/python -c "import pm; assert not pm.drift()"
+            /opt/hermes/.venv/bin/python -c "from pathlib import Path; from pm.environments import activate_dependencies; activate_dependencies(Path(\"/opt/hermes\")); import mcp.server, langfuse, httpx, cryptography"
+            HOME=/tmp/hermes-test HERMES_HOME=/tmp/hermes-test /opt/hermes/.venv/bin/hermes mcp-serve --help > /tmp/mcp-help.txt
+            grep -q "stdio MCP server" /tmp/mcp-help.txt
+          '
+      - name: Publish tested image under a unique commit tag
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DOCKERHUB_USERNAME" && test -n "$DOCKERHUB_TOKEN"
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+          image="hillstreet/open-system:v0.22.5-compat-${GITHUB_SHA}"
+          docker tag open-system-compat:test "$image"
+          docker push "$image"
+          docker logout
