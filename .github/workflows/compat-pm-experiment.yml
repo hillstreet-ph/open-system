@@ -1,0 +1,22 @@
+name: Test Hermes managed plugin environment
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve plugin dependencies with Hermes PM
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /bin/sh hillstreet/open-system@sha256:49c74fddab1c061287fd18e6cd508acddf03c87cc3a21853b49a93c44e4731b2 -c '
+            set -eu
+            export HOME=/tmp/pm-test HERMES_HOME=/tmp/pm-test
+            mkdir -p "$HERMES_HOME"
+            printf "plugins:\n  enabled:\n    - mcp-serve\n    - spotify\n    - langfuse\n" > "$HERMES_HOME/config.yaml"
+            /opt/hermes/.venv/bin/hermes pm install venv
+            /opt/hermes/.venv/bin/python -c "import pm; d=pm.drift(); print(d); assert not d"
+          '
