@@ -106,16 +106,17 @@ jobs:
           if [ -z "$ZEABUR_TOKEN" ] || [ -z "$SID" ] || [ -z "$EID" ]; then
             echo "::error::ZEABUR_TOKEN / ZEABUR_SERVICE_ID / ZEABUR_ENVIRONMENT_ID not configured"; exit 1
           fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          sparse-checkout: deploy
       - name: Backup onto the persistent volume
         id: vol
         shell: bash
         run: |
           set -euo pipefail
           npx -y "$ZEABUR_CLI" auth login --token "$ZEABUR_TOKEN" -i=false >/dev/null
-          ts="$(date -u +%Y%m%dT%H%M%SZ)"
-          name="hermes-backup-${ts}.zip"
-          npx -y "$ZEABUR_CLI" service exec --id "$SID" --env-id "$EID" -i=false -- \
-            sh -c "mkdir -p /opt/data/backups && HERMES_HOME=/opt/data /opt/hermes/.venv/bin/hermes backup -o /opt/data/backups/${name} -k 7"
+          bash deploy/zeabur-backup.sh daily | tee /tmp/backup.out
+          name="$(tail -n 1 /tmp/backup.out)"
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "- volume backup: \`/opt/data/backups/${name}\` (newest 7 kept)" >> "$GITHUB_STEP_SUMMARY"
       - name: Encrypted off-site copy
