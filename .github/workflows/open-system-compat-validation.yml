@@ -230,11 +230,7 @@ jobs:
       - name: Pre-deploy backup (on the persistent volume)
         if: steps.cfg.outputs.ready == 'true'
         shell: bash
-        run: |
-          set -euo pipefail
-          ts="$(date -u +%Y%m%dT%H%M%SZ)"
-          npx -y "$ZEABUR_CLI" service exec --id "$SID" --env-id "$EID" -i=false -- \
-            sh -c "mkdir -p /opt/data/backups && HERMES_HOME=/opt/data /opt/hermes/.venv/bin/hermes backup -o /opt/data/backups/hermes-backup-${ts}-pre-deploy.zip -k 7 && ls -la /opt/data/backups | tail -n 3"
+        run: bash deploy/zeabur-backup.sh pre-deploy
       - name: Deploy image to Zeabur
         if: steps.cfg.outputs.ready == 'true'
         id: rollout
