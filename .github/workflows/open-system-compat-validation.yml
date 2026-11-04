@@ -2,7 +2,7 @@
 #
 # One workflow owns the whole path for the production image:
 #   detect upstream release -> bump digest -> build -> validate -> publish (Docker Hub)
-#   -> pre-deploy backup -> deploy (Zeabur) -> health gate -> rollback on failure
+#   -> pre-deploy volume snapshot -> deploy (Railway) -> health gate -> rollback on failure
 #   -> record release + merge the bump into main only after the gate passes.
 #
 # Triggers
@@ -13,11 +13,11 @@
 #
 # Required configuration (names only; never commit values)
 #   secrets.DOCKERHUB_USERNAME / secrets.DOCKERHUB_TOKEN   publish image (already used)
-#   secrets.ZEABUR_TOKEN                                   Zeabur API token (deploy/rollback)
-#   vars.ZEABUR_SERVICE_ID                                 production service id
-#   vars.ZEABUR_ENVIRONMENT_ID                             production environment id
+#   secrets.RAILWAY_TOKEN                                  Railway project token (deploy/rollback/backup)
+#   vars.RAILWAY_SERVICE_ID / vars.RAILWAY_ENVIRONMENT_ID  production service + environment
+#   vars.RAILWAY_VOLUME_INSTANCE_ID                        persistent volume (pre-deploy snapshot)
 #   vars.OPEN_SYSTEM_STATUS_URL   (optional) default https://open-system.space/api/status
-# Without ZEABUR_TOKEN the deploy job is skipped with a warning, and nothing is merged.
+# Without RAILWAY_TOKEN the deploy job is skipped with a warning, and nothing is merged.
 name: Open-System release
 
 on:
@@ -52,7 +52,6 @@ env:
   RELEASE_FILE: deploy/open-system.release
   IMAGE_REPO: hillstreet/open-system
   UPSTREAM_IMAGE: nousresearch/hermes-agent
-  ZEABUR_CLI: zeabur@0.24.0
 
 jobs:
   plan:
@@ -197,9 +196,10 @@ jobs:
       contents: write
       issues: write
     env:
-      ZEABUR_TOKEN: ${{ secrets.ZEABUR_TOKEN }}
-      SID: ${{ vars.ZEABUR_SERVICE_ID }}
-      EID: ${{ vars.ZEABUR_ENVIRONMENT_ID }}
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_SERVICE_ID: ${{ vars.RAILWAY_SERVICE_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_VOLUME_INSTANCE_ID: ${{ vars.RAILWAY_VOLUME_INSTANCE_ID }}
       STATUS_URL: ${{ vars.OPEN_SYSTEM_STATUS_URL || 'https://open-system.space/api/status' }}
       TAG: ${{ needs.plan.outputs.tag }}
       VERSION: ${{ needs.plan.outputs.version }}
@@ -211,33 +211,30 @@ jobs:
         id: cfg
         shell: bash
         run: |
-          if [ -z "$ZEABUR_TOKEN" ] || [ -z "$SID" ] || [ -z "$EID" ]; then
-            echo "::warning::ZEABUR_TOKEN / ZEABUR_SERVICE_ID / ZEABUR_ENVIRONMENT_ID not configured; deploy skipped. Image ${TAG} is published and can be deployed manually."
+          if [ -z "$RAILWAY_TOKEN" ] || [ -z "$RAILWAY_SERVICE_ID" ] || [ -z "$RAILWAY_ENVIRONMENT_ID" ]; then
+            echo "::warning::RAILWAY_TOKEN / RAILWAY_SERVICE_ID / RAILWAY_ENVIRONMENT_ID not configured; deploy skipped. Image ${TAG} is published and can be deployed manually."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
-      - name: Zeabur login and record rollback point
+      - name: Record rollback point
         if: steps.cfg.outputs.ready == 'true'
         id: prev
         shell: bash
         run: |
           set -euo pipefail
-          npx -y "$ZEABUR_CLI" auth login --token "$ZEABUR_TOKEN" -i=false >/dev/null
           prev="$(sed -n 's/^tag=//p' "$RELEASE_FILE" 2>/dev/null || true)"
           echo "prev=$prev" >> "$GITHUB_OUTPUT"
           echo "- rollback point: \`${IMAGE_REPO}:${prev:-<none recorded>}\`" >> "$GITHUB_STEP_SUMMARY"
-      - name: Pre-deploy backup (on the persistent volume)
-        if: steps.cfg.outputs.ready == 'true'
+      - name: Pre-deploy volume snapshot (Railway native backup)
+        if: steps.cfg.outputs.ready == 'true' && env.RAILWAY_VOLUME_INSTANCE_ID != ''
         shell: bash
-        run: bash deploy/zeabur-backup.sh pre-deploy
-      - name: Deploy image to Zeabur
+        run: bash deploy/railway.sh backup "pre-deploy-${TAG}"
+      - name: Deploy image to Railway
         if: steps.cfg.outputs.ready == 'true'
         id: rollout
         shell: bash
-        run: |
-          set -euo pipefail
-          npx -y "$ZEABUR_CLI" service update tag --id "$SID" --env-id "$EID" -t "$TAG" -y -i=false
+        run: bash deploy/railway.sh image "docker.io/${IMAGE_REPO}:${TAG}"
       - name: Health gate
         if: steps.cfg.outputs.ready == 'true'
         id: gate
@@ -267,7 +264,7 @@ jobs:
           PREV: ${{ steps.prev.outputs.prev }}
         run: |
           set -euo pipefail
-          npx -y "$ZEABUR_CLI" service update tag --id "$SID" --env-id "$EID" -t "$PREV" -y -i=false
+          bash deploy/railway.sh image "docker.io/${IMAGE_REPO}:${PREV}"
           for i in $(seq 1 40); do
             sleep 15
             if curl -fsS --max-time 15 "$STATUS_URL" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("gateway_running") else 1)'; then
