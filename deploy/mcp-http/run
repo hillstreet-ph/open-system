@@ -1,0 +1,16 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Authenticated HTTP MCP bridge for mcp.open-system.space (deploy/mcp-http/server.py).
+# Opt-in: dormant unless MCP_HTTP_TOKEN is set (service env or /opt/data/.env).
+set -eu
+
+if [ -z "${MCP_HTTP_TOKEN:-}" ]; then
+    MCP_HTTP_TOKEN="$(sed -n 's/^MCP_HTTP_TOKEN=//p' /opt/data/.env 2>/dev/null | head -n 1 | tr -d '\r')"
+    export MCP_HTTP_TOKEN
+fi
+if [ -z "${MCP_HTTP_TOKEN:-}" ]; then
+    exec sleep infinity
+fi
+
+cd "${HERMES_HOME:-/opt/data}"
+exec s6-setuidgid hermes /opt/mcp-http/bin/python -I /opt/mcp-http/server.py
