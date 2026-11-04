@@ -1,13 +1,12 @@
 # Open-System production operations: health watch, self-heal, scheduled backups.
 #
-#   health  every 20 min   probe /api/status; on failure restart via Zeabur, re-probe,
+#   health  every 20 min   probe /api/status; on failure redeploy the Railway service, re-probe,
 #                          open (or update) one incident issue if still unhealthy.
-#   backup  daily          full `hermes backup` onto the persistent volume (/opt/data/backups,
-#                          newest 7 kept) + an encrypted off-site copy as a workflow artifact.
+#   backup  daily          native Railway snapshot of the /opt/data volume (daily-YYYYMMDD).
 #
-# Config: secrets.ZEABUR_TOKEN, vars.ZEABUR_SERVICE_ID, vars.ZEABUR_ENVIRONMENT_ID,
-#         secrets.BACKUP_PASSPHRASE (off-site copy; skipped when unset - this repo is public,
-#         so an unencrypted backup is never uploaded), vars.OPEN_SYSTEM_STATUS_URL (optional).
+# Config: secrets.RAILWAY_TOKEN (project token), vars.RAILWAY_SERVICE_ID,
+#         vars.RAILWAY_ENVIRONMENT_ID, vars.RAILWAY_VOLUME_INSTANCE_ID,
+#         vars.OPEN_SYSTEM_STATUS_URL (optional).
 name: Open-System ops
 
 on:
@@ -29,10 +28,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  ZEABUR_CLI: zeabur@0.24.0
-  ZEABUR_TOKEN: ${{ secrets.ZEABUR_TOKEN }}
-  SID: ${{ vars.ZEABUR_SERVICE_ID }}
-  EID: ${{ vars.ZEABUR_ENVIRONMENT_ID }}
+  RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+  RAILWAY_SERVICE_ID: ${{ vars.RAILWAY_SERVICE_ID }}
+  RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+  RAILWAY_VOLUME_INSTANCE_ID: ${{ vars.RAILWAY_VOLUME_INSTANCE_ID }}
   STATUS_URL: ${{ vars.OPEN_SYSTEM_STATUS_URL || 'https://open-system.space/api/status' }}
 
 jobs:
@@ -58,14 +57,17 @@ jobs:
           }
           for i in 1 2 3; do check && { echo "healthy=true" >> "$GITHUB_OUTPUT"; exit 0; }; sleep 20; done
           echo "healthy=false" >> "$GITHUB_OUTPUT"
-      - name: Self-heal (restart service)
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        if: steps.probe.outputs.healthy == 'false'
+        with:
+          sparse-checkout: deploy
+      - name: Self-heal (redeploy service)
         id: heal
-        if: steps.probe.outputs.healthy == 'false' && env.ZEABUR_TOKEN != ''
+        if: steps.probe.outputs.healthy == 'false' && env.RAILWAY_TOKEN != ''
         shell: bash
         run: |
           set -uo pipefail
-          npx -y "$ZEABUR_CLI" auth login --token "$ZEABUR_TOKEN" -i=false >/dev/null
-          npx -y "$ZEABUR_CLI" service restart --id "$SID" --env-id "$EID" -y -i=false
+          bash deploy/railway.sh redeploy
           for i in $(seq 1 30); do
             sleep 15
             curl -fsS --max-time 20 "$STATUS_URL" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("gateway_running") else 1)' \
@@ -84,7 +86,7 @@ jobs:
             const title = 'Production health check failing (open-system)';
             const { data } = await github.rest.issues.listForRepo({ ...context.repo, state: 'open', labels: 'incident', per_page: 50 });
             const open = data.find(i => i.title === title);
-            const line = `${new Date().toISOString()} unhealthy; auto-restart ${recovered ? 'recovered the service' : 'did NOT recover it (or no ZEABUR_TOKEN)'} - ${run}`;
+            const line = `${new Date().toISOString()} unhealthy; auto-redeploy ${recovered ? 'recovered the service' : 'did NOT recover it (or no RAILWAY_TOKEN)'} - ${run}`;
             if (open) {
               await github.rest.issues.createComment({ ...context.repo, issue_number: open.number, body: line });
               if (recovered) await github.rest.issues.update({ ...context.repo, issue_number: open.number, state: 'closed' });
@@ -96,48 +98,17 @@ jobs:
   backup:
     if: github.event.schedule == '17 19 * * *' || inputs.task == 'backup'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+    timeout-minutes: 10
     steps:
-      - name: Require Zeabur access
-        shell: bash
-        run: |
-          if [ -z "$ZEABUR_TOKEN" ] || [ -z "$SID" ] || [ -z "$EID" ]; then
-            echo "::error::ZEABUR_TOKEN / ZEABUR_SERVICE_ID / ZEABUR_ENVIRONMENT_ID not configured"; exit 1
-          fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           sparse-checkout: deploy
-      - name: Backup onto the persistent volume
-        id: vol
+      - name: Railway volume snapshot
         shell: bash
         run: |
           set -euo pipefail
-          npx -y "$ZEABUR_CLI" auth login --token "$ZEABUR_TOKEN" -i=false >/dev/null
-          bash deploy/zeabur-backup.sh daily | tee /tmp/backup.out
-          name="$(tail -n 1 /tmp/backup.out)"
-          echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "- volume backup: \`/opt/data/backups/${name}\` (newest 7 kept)" >> "$GITHUB_STEP_SUMMARY"
-      - name: Encrypted off-site copy
-        if: env.BACKUP_PASSPHRASE != ''
-        env:
-          NAME: ${{ steps.vol.outputs.name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          size="$(npx -y "$ZEABUR_CLI" service exec --id "$SID" --env-id "$EID" -i=false -- stat -c %s "/opt/data/backups/${NAME}" | tr -dc 0-9)"
-          if [ "${size:-0}" -gt 400000000 ]; then echo "::warning::backup is ${size} bytes; off-site copy skipped"; exit 0; fi
-          npx -y "$ZEABUR_CLI" service exec --id "$SID" --env-id "$EID" -i=false -- base64 -w0 "/opt/data/backups/${NAME}" \
-            | tr -d '\r\n' | base64 -d > backup.zip
-          python3 -c "import zipfile,sys; zipfile.ZipFile('backup.zip').testzip() is None or sys.exit(1)"
-          gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 \
-            -o "${NAME}.gpg" backup.zip 3<<<"$BACKUP_PASSPHRASE"
-          rm -f backup.zip
-          echo "- off-site: \`${NAME}.gpg\` (AES256, 30-day artifact)" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: hashFiles('*.gpg') != ''
-        with:
-          name: open-system-backup-${{ github.run_id }}
-          path: '*.gpg'
-          retention-days: 30
+          if [ -z "$RAILWAY_TOKEN" ] || [ -z "$RAILWAY_VOLUME_INSTANCE_ID" ]; then
+            echo "::error::RAILWAY_TOKEN / RAILWAY_VOLUME_INSTANCE_ID not configured"; exit 1
+          fi
+          bash deploy/railway.sh backup "daily-$(date -u +%Y%m%d)"
+          echo "- Railway volume snapshot requested (daily)" >> "$GITHUB_STEP_SUMMARY"
