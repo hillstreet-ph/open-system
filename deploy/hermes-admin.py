@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -255,6 +256,7 @@ def fix_profiles(d: Dashboard) -> None:
         for k in OPEN_CONNECT_KEYS:
             if keys[n].get(k):
                 continue
+            time.sleep(6.5)  # /api/env/reveal allows 5 calls per 30 s
             status, body = d.call("POST", "/api/env/reveal", {"key": k, "profile": donor})
             value = body.get("value") if isinstance(body, dict) else None
             if status >= 400 or not value:
