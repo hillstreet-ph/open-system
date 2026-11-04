@@ -123,12 +123,26 @@ def profiles(d: Dashboard) -> list[str]:
     return [n for n in names if n]
 
 
-def config(d: Dashboard) -> dict:
-    body = d.get("/api/config/raw")
-    text = body.get("yaml_text") if isinstance(body, dict) else None
-    if not text:
-        die("config/raw returned no yaml_text")
+def config(d: Dashboard, profile: str | None = None) -> dict:
+    q = "?" + urllib.parse.urlencode({"profile": profile}) if profile else ""
+    body = d.get(f"/api/config/raw{q}")
+    text = (body.get("yaml") or body.get("yaml_text")) if isinstance(body, dict) else None
+    if text is None:
+        die(f"config/raw returned no yaml (keys: {sorted(body) if isinstance(body, dict) else type(body).__name__})")
     return yaml.safe_load(text) or {}
+
+
+def routing(cfg: dict) -> str:
+    """One-line model routing summary: provider/model/base_url and the fallback chain."""
+    m = cfg.get("model") if isinstance(cfg.get("model"), dict) else {"default": cfg.get("model")}
+    fb = cfg.get("fallback_providers") or cfg.get("fallback_models") or cfg.get("fallback_model") or []
+    if isinstance(fb, dict):
+        fb = [fb]
+    chain = ", ".join(f"{f.get('provider')}:{f.get('model')}@{f.get('base_url', '')}" if isinstance(f, dict) else str(f)
+                      for f in fb)
+    web = (cfg.get("web") or {}).get("backend") or (cfg.get("web") or {}).get("search_backend") or (cfg.get("web") or {}).get("provider")
+    return (f"main={m.get('provider')}:{m.get('default') or m.get('model')}@{m.get('base_url', '')} "
+            f"fallbacks=[{chain}] web={web}")
 
 
 def scrub(obj: object) -> object:
@@ -163,6 +177,10 @@ def diagnose(d: Dashboard) -> None:
         provider_keys = sorted(k for k, v in keys.items() if v and re.search(r"(API_KEY|TOKEN)$", k))
         print(f"  {name}: {OPEN_CONNECT_KEY}={'yes' if keys.get(OPEN_CONNECT_KEY) else 'NO'} "
               f"keys_set={len([v for v in keys.values() if v])} provider_keys={provider_keys}")
+        print(f"    {routing(config(d, name))}")
+        providers = config(d, name).get("custom_providers") or config(d, name).get("providers") or []
+        if providers:
+            print(f"    providers: {yaml.safe_dump(scrub(providers), default_flow_style=True, width=400).strip()[:1200]}")
 
 
 def main() -> None:
