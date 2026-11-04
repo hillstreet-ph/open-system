@@ -1,6 +1,6 @@
-# hermes-version: v0.22.6  (base = nousresearch/hermes-agent:v0.22.6, digest-pinned below)
+# hermes-version: v0.22.7  (base = nousresearch/hermes-agent:v0.22.6, digest-pinned below)
 FROM hillstreet/open-system@sha256:7d7620db45e9dce4c2a25a1f3bbd864531d9320391f4902090dbaf690e08fc25 AS legacy
-FROM nousresearch/hermes-agent@sha256:d27689bc6e8581ec884a7227c9101fdaebf6c853cff8859020dac14f21452b4d
+FROM nousresearch/hermes-agent@sha256:e6d81ae52ebf6a43efa529701405509f20054ba818f179ddd748bed4f8af584c
 
 # Retain the existing Open-System tunnel while upgrading Hermes itself.
 COPY --from=legacy /usr/local/bin/tunnel-client /usr/local/bin/tunnel-client
@@ -22,3 +22,16 @@ RUN set -eu; \
     test -f /opt/hermes/plugins/spotify/plugin.yaml; \
     test -f /opt/hermes/plugins/langfuse/plugin.yaml; \
     grep -q 'hermes mcp-serve' /etc/s6-overlay/s6-rc.d/hermes-mcp-tunnel/run
+
+# Authenticated HTTP bridge for the Hermes MCP server (mcp.open-system.space, port 8765).
+# Separate venv: mcp-proxy needs mcp<2 while Hermes ships mcp 2.x. Dormant without MCP_HTTP_TOKEN.
+COPY deploy/mcp-http/requirements.lock deploy/mcp-http/server.py /opt/mcp-http/
+COPY deploy/mcp-http/run /etc/s6-overlay/s6-rc.d/hermes-mcp-http/run
+RUN set -eu; \
+    "$(readlink -f /opt/hermes/.venv/bin/python3)" -m venv /opt/mcp-http; \
+    /opt/mcp-http/bin/pip install --no-cache-dir --require-hashes --only-binary=:all: -r /opt/mcp-http/requirements.lock; \
+    echo longrun > /etc/s6-overlay/s6-rc.d/hermes-mcp-http/type; \
+    mkdir -p /etc/s6-overlay/s6-rc.d/hermes-mcp-http/dependencies.d; \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-mcp-http; \
+    chmod 0755 /etc/s6-overlay/s6-rc.d/hermes-mcp-http/run /opt/mcp-http/server.py; \
+    /opt/mcp-http/bin/python -I -c "import mcp_proxy.mcp_server, mcp_proxy.proxy_server"
