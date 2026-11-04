@@ -1,0 +1,41 @@
+# Production Hermes admin tasks against the dashboard API (deploy/hermes-admin.py).
+# The dashboard login is read from Railway with RAILWAY_TOKEN inside the job; nothing secret
+# is printed. Manual dispatch only.
+name: Open-System admin
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [diagnose]
+        default: diagnose
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-system-admin
+  cancel-in-progress: false
+
+jobs:
+  admin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_SERVICE_ID: ${{ vars.RAILWAY_SERVICE_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          sparse-checkout: deploy
+      - name: Run ${{ inputs.action }}
+        shell: bash
+        env:
+          ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --user --break-system-packages pyyaml
+          python3 deploy/hermes-admin.py "$ACTION"
