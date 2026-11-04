@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Railway control helper for the open-system production service (GraphQL public API).
 #
-# Env: RAILWAY_TOKEN (project token, header Project-Access-Token), RAILWAY_SERVICE_ID,
+# Env: RAILWAY_TOKEN (project token or account/workspace token; auto-detected), RAILWAY_SERVICE_ID,
 #      RAILWAY_ENVIRONMENT_ID, optional RAILWAY_VOLUME_INSTANCE_ID (for backups).
 #
 #   railway.sh image <docker-image-ref>   set the service image and deploy it
@@ -13,11 +13,26 @@ set -euo pipefail
 API="https://backboard.railway.com/graphql/v2"
 : "${RAILWAY_TOKEN:?}" "${RAILWAY_SERVICE_ID:?}" "${RAILWAY_ENVIRONMENT_ID:?}"
 
+# RAILWAY_TOKEN may be a project token (Project-Access-Token header) or an account/workspace
+# token (Authorization: Bearer). Detect once: only a project token can read `projectToken`.
+auth_header() {
+  if [ -z "${RAILWAY_AUTH_HEADER:-}" ]; then
+    if curl -fsS --max-time 30 "$API" -H "Project-Access-Token: $RAILWAY_TOKEN" -H 'Content-Type: application/json' \
+         -d '{"query":"{ projectToken { projectId } }"}' 2>/dev/null | grep -q '"projectId"'; then
+      RAILWAY_AUTH_HEADER="Project-Access-Token: $RAILWAY_TOKEN"
+    else
+      RAILWAY_AUTH_HEADER="Authorization: Bearer $RAILWAY_TOKEN"
+    fi
+  fi
+  printf '%s' "$RAILWAY_AUTH_HEADER"
+}
+
 gql() {
-  local payload
+  local payload hdr
   payload="$(python3 -c 'import json,sys; print(json.dumps({"query": sys.argv[1], "variables": json.loads(sys.argv[2])}))' "$1" "$2")"
+  hdr="$(auth_header)"
   local out
-  out="$(curl -fsS --retry 3 --max-time 60 "$API" -H "Project-Access-Token: $RAILWAY_TOKEN" \
+  out="$(curl -fsS --retry 3 --max-time 60 "$API" -H "$hdr" \
         -H 'Content-Type: application/json' -d "$payload")"
   if printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(1 if d.get("errors") else 0)'; then
     printf '%s' "$out"
