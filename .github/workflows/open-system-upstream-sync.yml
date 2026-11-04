@@ -1,0 +1,57 @@
+# Keep the fork's source in step with NousResearch/hermes-agent (GitHub "Sync fork").
+#
+# Production runs the official upstream image (see open-system-compat-validation.yml), so this
+# only keeps the fork's code current. Upstream commits that touch .github/workflows need a token
+# with the `workflow` scope: set secrets.UPSTREAM_SYNC_TOKEN (fine-grained PAT, Contents +
+# Workflows read/write on this repo). Without it the sync uses GITHUB_TOKEN, which GitHub
+# refuses for workflow-file changes; the job then opens/updates one `upstream-sync` issue.
+name: Open-System upstream sync
+
+on:
+  schedule:
+    - cron: '23 21 * * *' # 05:23 Asia/Manila, before the daily release check
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: open-system-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Sync main with upstream
+        id: sync
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+        run: |
+          set -uo pipefail
+          if out="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/merge-upstream" -f branch=main 2>&1)"; then
+            echo "result=ok" >> "$GITHUB_OUTPUT"
+            echo "$out" | head -c 400
+            echo "- upstream sync: $(echo "$out" | head -c 200)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "result=failed" >> "$GITHUB_OUTPUT"
+            { echo 'detail<<EOF'; echo "$out" | head -c 600; echo 'EOF'; } >> "$GITHUB_OUTPUT"
+            echo "::warning::upstream sync failed: $(echo "$out" | head -c 300)"
+          fi
+      - name: Report sync failure
+        if: steps.sync.outputs.result == 'failed'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          DETAIL: ${{ steps.sync.outputs.detail }}
+        with:
+          script: |
+            const title = 'Upstream sync needs attention (open-system)';
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${new Date().toISOString()} sync with NousResearch/hermes-agent failed - ${run}\n\n\`\`\`\n${process.env.DETAIL}\n\`\`\`\nIf this mentions workflows, add secrets.UPSTREAM_SYNC_TOKEN (Contents + Workflows write). If it is a conflict, resolve it with "Sync fork" on GitHub.`;
+            const { data } = await github.rest.issues.listForRepo({ ...context.repo, state: 'open', labels: 'upstream-sync', per_page: 20 });
+            const open = data.find(i => i.title === title);
+            if (open) await github.rest.issues.createComment({ ...context.repo, issue_number: open.number, body });
+            else await github.rest.issues.create({ ...context.repo, title, body, labels: ['upstream-sync'] });
