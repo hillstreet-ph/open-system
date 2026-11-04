@@ -44,7 +44,7 @@ case "${1:-}" in
     ;;
   backup)
     : "${RAILWAY_VOLUME_INSTANCE_ID:?}"
-    gql 'mutation($v:String!,$n:String){volumeInstanceBackupCreate(volumeInstanceId:$v,name:$n)}' \
+    gql 'mutation($v:String!,$n:String){volumeInstanceBackupCreate(volumeInstanceId:$v,name:$n){workflowId}}' \
       "$(python3 -c 'import json,os,sys; print(json.dumps({"v":os.environ["RAILWAY_VOLUME_INSTANCE_ID"],"n":sys.argv[1]}))' "${2:-manual}")" >/dev/null
     echo "volume backup requested: ${2:-manual}"
     ;;
