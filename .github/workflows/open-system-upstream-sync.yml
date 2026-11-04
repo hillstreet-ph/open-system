@@ -15,6 +15,7 @@ on:
 permissions:
   contents: write
   issues: write
+  pull-requests: write
 
 concurrency:
   group: open-system-upstream-sync
@@ -36,6 +37,25 @@ jobs:
             echo "result=ok" >> "$GITHUB_OUTPUT"
             echo "$out" | head -c 400
             echo "- upstream sync: $(echo "$out" | head -c 200)" >> "$GITHUB_STEP_SUMMARY"
+          elif printf '%s' "$out" | grep -qiE 'protected|required status|pull request'; then
+            # main is protected: bring upstream in through an auto-merging PR (required checks run on it).
+            url="$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --head main --state open --json url,headRepositoryOwner \
+                   --jq '.[] | select(.headRepositoryOwner.login=="NousResearch") | .url' | head -n1)"
+            if [ -z "$url" ]; then
+              url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head NousResearch:main \
+                     --title "chore(upstream): sync with NousResearch/hermes-agent" \
+                     --body "Automated upstream sync (main is protected, so direct merge-upstream is refused). Auto-merges once required checks pass." 2>&1)" || url=""
+            fi
+            if [ -n "$url" ] && printf '%s' "$url" | grep -q '/pull/'; then
+              gh pr merge "$url" --merge --auto >/dev/null 2>&1 || true
+              echo "result=ok" >> "$GITHUB_OUTPUT"
+              echo "- upstream sync via PR (auto-merge): $url" >> "$GITHUB_STEP_SUMMARY"
+            elif printf '%s' "$url" | grep -qi 'no commits between'; then
+              echo "result=ok" >> "$GITHUB_OUTPUT"; echo "- upstream sync: already up to date" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "result=failed" >> "$GITHUB_OUTPUT"
+              { echo 'detail<<EOF'; printf '%s\n%s\n' "$out" "$url" | head -c 600; echo 'EOF'; } >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "result=failed" >> "$GITHUB_OUTPUT"
             { echo 'detail<<EOF'; echo "$out" | head -c 600; echo 'EOF'; } >> "$GITHUB_OUTPUT"

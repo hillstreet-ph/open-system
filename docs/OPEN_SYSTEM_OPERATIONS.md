@@ -13,6 +13,7 @@ plugins (`deploy/open-system-compat.Dockerfile`).
 | Start command | `/opt/hermes/docker/entrypoint-dispatch.sh sleep infinity` (keeps `/init` + s6 supervision as PID 1; without it the image runs the interactive CLI, which exits without a TTY and stops the container) |
 | Public dashboard / Desktop gateway | `https://open-system.space` (Cloudflare proxied → Railway, container port 9119, login required) |
 | OpenAI-compatible API | `https://api.open-system.space/v1` (Cloudflare DNS-only → Railway, container port 8642, `Authorization: Bearer <API_SERVER_KEY>`) |
+| Hermes MCP (HTTP) | `https://mcp.open-system.space/mcp` (Cloudflare DNS-only → Railway, container port 8765, `Authorization: Bearer <MCP_HTTP_TOKEN>`; see `deploy/mcp-http/README.md`) |
 | Health endpoints | `https://open-system.space/api/status` (gateway + platforms), `https://api.open-system.space/health` |
 | Persistent state | Railway volume `hermes-agent-volume` (250 GB, growable) at `/opt/data` (`HERMES_HOME`), owned by uid 10000 (`hermes`) |
 | Image registry | Docker Hub `hillstreet/open-system:<version>-compat-<id>` (immutable tags) |
@@ -63,6 +64,7 @@ in `RAILWAY_TOKEN` and picks the matching auth header automatically.
 | `RAILWAY_ENVIRONMENT_ID` | variable | `production` environment id |
 | `RAILWAY_VOLUME_INSTANCE_ID` | variable | volume instance of `hermes-agent-volume` |
 | `OPEN_SYSTEM_STATUS_URL` | variable, optional | defaults to `https://open-system.space/api/status` |
+| `MCP_HTTP_TOKEN` | Railway service variable | bearer token for `mcp.open-system.space`; created by the release workflow, never printed |
 
 Railway service variables (values live only in Railway): `API_SERVER_KEY`,
 `HERMES_DASHBOARD*` (incl. basic-auth username/password/hash/secret),

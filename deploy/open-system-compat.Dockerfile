@@ -22,3 +22,16 @@ RUN set -eu; \
     test -f /opt/hermes/plugins/spotify/plugin.yaml; \
     test -f /opt/hermes/plugins/langfuse/plugin.yaml; \
     grep -q 'hermes mcp-serve' /etc/s6-overlay/s6-rc.d/hermes-mcp-tunnel/run
+
+# Authenticated HTTP bridge for the Hermes MCP server (mcp.open-system.space, port 8765).
+# Separate venv: mcp-proxy needs mcp<2 while Hermes ships mcp 2.x. Dormant without MCP_HTTP_TOKEN.
+COPY deploy/mcp-http/requirements.lock deploy/mcp-http/server.py /opt/mcp-http/
+COPY deploy/mcp-http/run /etc/s6-overlay/s6-rc.d/hermes-mcp-http/run
+RUN set -eu; \
+    "$(readlink -f /opt/hermes/.venv/bin/python3)" -m venv /opt/mcp-http; \
+    /opt/mcp-http/bin/pip install --no-cache-dir --require-hashes --only-binary=:all: -r /opt/mcp-http/requirements.lock; \
+    echo longrun > /etc/s6-overlay/s6-rc.d/hermes-mcp-http/type; \
+    mkdir -p /etc/s6-overlay/s6-rc.d/hermes-mcp-http/dependencies.d; \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-mcp-http; \
+    chmod 0755 /etc/s6-overlay/s6-rc.d/hermes-mcp-http/run /opt/mcp-http/server.py; \
+    /opt/mcp-http/bin/python -I -c "import mcp_proxy.mcp_server, mcp_proxy.proxy_server"

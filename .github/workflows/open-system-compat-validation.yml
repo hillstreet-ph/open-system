@@ -37,7 +37,7 @@ on:
     branches: ['main', 'codex/hermes-v0225-compat', 'chore/hermes-v*-compat']
     paths:
       - deploy/open-system-compat.Dockerfile
-      - deploy/open-system.release
+      - deploy/mcp-http/**
       - .github/workflows/open-system-compat-validation.yml
 
 permissions:
@@ -137,6 +137,10 @@ jobs:
     outputs:
       image: ${{ steps.publish.outputs.image }}
     steps:
+      # Build context for COPY deploy/mcp-http/*; the (possibly bumped) Dockerfile comes from the plan artifact.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          sparse-checkout: deploy
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: compat-dockerfile
@@ -167,6 +171,10 @@ jobs:
             /opt/hermes/.venv/bin/python -c "from pathlib import Path; from pm.environments import activate_dependencies; activate_dependencies(Path(\"/opt/hermes\")); import mcp.server, langfuse, httpx, cryptography"
             /opt/hermes/.venv/bin/hermes mcp-serve --help > /tmp/mcp-help.txt
             grep -q "stdio MCP server" /tmp/mcp-help.txt
+            test -f /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-mcp-http
+            test -x /etc/s6-overlay/s6-rc.d/hermes-mcp-http/run
+            /opt/mcp-http/bin/python -I -c "import mcp_proxy.mcp_server, mcp_proxy.proxy_server"
+            if MCP_HTTP_TOKEN=short /opt/mcp-http/bin/python -I /opt/mcp-http/server.py; then echo "mcp-http started without a valid token" >&2; exit 1; fi
           '
       - name: Publish tested image under an immutable tag
         id: publish
@@ -195,6 +203,7 @@ jobs:
     permissions:
       contents: write
       issues: write
+      pull-requests: write
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       RAILWAY_SERVICE_ID: ${{ vars.RAILWAY_SERVICE_ID }}
@@ -223,13 +232,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          prev="$(sed -n 's/^tag=//p' "$RELEASE_FILE" 2>/dev/null || true)"
+          # Railway is the source of truth for what is running; the release file is the fallback.
+          cur="$(bash deploy/railway.sh current-image 2>/dev/null || true)"
+          case "$cur" in *"${IMAGE_REPO}:"*) prev="${cur##*:}" ;; *) prev="$(sed -n 's/^tag=//p' "$RELEASE_FILE" 2>/dev/null || true)" ;; esac
           echo "prev=$prev" >> "$GITHUB_OUTPUT"
           echo "- rollback point: \`${IMAGE_REPO}:${prev:-<none recorded>}\`" >> "$GITHUB_STEP_SUMMARY"
       - name: Pre-deploy volume snapshot (Railway native backup)
         if: steps.cfg.outputs.ready == 'true' && env.RAILWAY_VOLUME_INSTANCE_ID != ''
         shell: bash
         run: bash deploy/railway.sh backup "pre-deploy-${TAG}"
+      - name: Ensure MCP bridge token (mcp.open-system.space)
+        if: steps.cfg.outputs.ready == 'true'
+        shell: bash
+        run: bash deploy/railway.sh ensure-secret MCP_HTTP_TOKEN
       - name: Deploy image to Railway
         if: steps.cfg.outputs.ready == 'true'
         id: rollout
@@ -257,6 +272,16 @@ jobs:
           done
           echo "healthy=false" >> "$GITHUB_OUTPUT"
           exit 1
+      - name: MCP bridge check (warning only)
+        if: steps.cfg.outputs.ready == 'true' && steps.gate.outputs.healthy == 'true'
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://mcp.open-system.space/healthz)"
+            [ "$code" = 204 ] && { echo "- MCP bridge healthy (mcp.open-system.space)" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+            sleep 10
+          done
+          echo "::warning::mcp.open-system.space/healthz returned $code"
       - name: Roll back to the previous release
         if: failure() && steps.prev.outputs.prev != '' && (steps.rollout.outcome == 'failure' || steps.gate.outcome == 'failure')
         shell: bash
@@ -283,14 +308,17 @@ jobs:
               body: `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\nTarget: ${process.env.TAG}\nThe pipeline attempted an automatic rollback; see the run summary.`,
               labels: ['incident'],
             });
-      - name: Record release and merge the validated bump into main
+      - name: Record release and merge the validated bump into main (via pull request)
+        # main is protected (PR + required "ci" check), so the record lands through an auto-merging PR.
+        # A PAT (UPSTREAM_SYNC_TOKEN) is preferred: PRs opened with GITHUB_TOKEN do not trigger the
+        # required check. Production is already healthy here, so a failure to record only warns.
         if: success() && steps.cfg.outputs.ready == 'true'
         shell: bash
         env:
           BUMPED: ${{ needs.plan.outputs.bumped }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           if [ "$BUMPED" = true ]; then
             gh run download "$GITHUB_RUN_ID" -n compat-dockerfile -D /tmp/df
             cp /tmp/df/open-system-compat.Dockerfile "$DOCKERFILE"
@@ -300,5 +328,17 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$DOCKERFILE" "$RELEASE_FILE"
           git diff --cached --quiet && exit 0
-          git commit -m "release(open-system): ${VERSION} deployed as ${TAG} [skip ci]"
-          git push origin HEAD:main
+          branch="chore/release-${TAG}"
+          git checkout -b "$branch"
+          git commit -s -m "release(open-system): ${VERSION} deployed as ${TAG}"
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git push -u origin "$branch" \
+             && url="$(gh pr create --base main --head "$branch" --title "release(open-system): ${VERSION} deployed as ${TAG}" \
+                  --body "Automated release record from ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Production already runs this image (health gate passed).")" \
+             && gh pr merge "$url" --squash --auto --delete-branch; then
+            echo "- release record PR (auto-merge): $url" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::Could not open/auto-merge the release-record PR; production runs ${TAG}. Merge ${branch} manually."
+            echo "- release record NOT merged; branch \`${branch}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
