@@ -7,6 +7,16 @@ names, providers, URLs and booleans only.
 
   hermes-admin.py diagnose     model routing, fallbacks, web provider, MCP servers,
                                per-profile key presence
+  hermes-admin.py fix          restore the intended routing and settings, then restart the gateway:
+                               - default: main = open-connect (named provider `openai`,
+                                 model open-connect/auto); model auto-rotation off (it kept
+                                 rewriting the main model to openrouter models served from
+                                 open-connect with the wrong key -> HTTP 401)
+                               - web.search_backend `brave` (no longer registered) -> keenable
+                               - profiles whose main model is not open-connect get the routing
+                                 block of a healthy open-connect profile
+                               - profiles missing the open-connect keys get them copied from a
+                                 healthy profile (values never printed)
 
 Env: RAILWAY_TOKEN, RAILWAY_SERVICE_ID, RAILWAY_ENVIRONMENT_ID, DASHBOARD_URL (optional).
 """
@@ -183,11 +193,95 @@ def diagnose(d: Dashboard) -> None:
             print(f"    providers: {yaml.safe_dump(scrub(providers), default_flow_style=True, width=400).strip()[:1200]}")
 
 
+OPEN_CONNECT_URL = "https://open-connect.site/v1"
+OPEN_CONNECT_KEYS = (OPEN_CONNECT_KEY, "OPEN_CONNECT_API_KEY", "MCP_OPEN_CONNECT_API_KEY")
+WEB_SEARCH_DEFAULT = "keenable"  # keyless tier; `brave` was renamed `brave-free` and needs a key
+
+
+def put_config(d: Dashboard, cfg: dict, profile: str | None) -> None:
+    text = yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True, width=200)
+    status, _ = d.call("PUT", "/api/config/raw", {"yaml_text": text, "profile": profile})
+    if status >= 400:
+        die(f"PUT config ({profile or 'default'}) -> HTTP {status}")
+
+
+def on_open_connect(cfg: dict) -> bool:
+    m = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    return m.get("base_url", "").rstrip("/") == OPEN_CONNECT_URL and m.get("provider") in ("custom", "openai") \
+        and "open-connect" in str(m.get("default") or m.get("model") or "")
+
+
+def fix_default(d: Dashboard) -> None:
+    cfg = config(d)
+    changes = []
+    m = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    if not on_open_connect(cfg) or m.get("auto_rotation") or m.get("continuous_rotation"):
+        m.update({"provider": "openai", "default": "open-connect/auto", "base_url": OPEN_CONNECT_URL,
+                  "auto_rotation": False, "continuous_rotation": False})
+        cfg["model"] = m
+        changes.append("model -> openai:open-connect/auto, rotation off")
+    rot = cfg.get("model_rotation")
+    if isinstance(rot, dict) and rot.get("enabled"):
+        rot["enabled"] = False
+        changes.append("model_rotation.enabled -> false")
+    web = cfg.get("web") if isinstance(cfg.get("web"), dict) else {}
+    if web.get("search_backend") in (None, "", "brave"):
+        web["search_backend"] = WEB_SEARCH_DEFAULT
+        cfg["web"] = web
+        changes.append(f"web.search_backend -> {WEB_SEARCH_DEFAULT}")
+    if changes:
+        put_config(d, cfg, None)
+    print(f"default: {'; '.join(changes) or 'already correct'}")
+    print(f"  now {routing(config(d))}")
+
+
+def fix_profiles(d: Dashboard) -> None:
+    names = [n for n in profiles(d) if n != "default"]
+    cfgs = {n: config(d, n) for n in names}
+    keys = {n: env_keys(d.get("/api/env?" + urllib.parse.urlencode({"profile": n}))) for n in names}
+    donors = [n for n in names if on_open_connect(cfgs[n]) and all(keys[n].get(k) for k in OPEN_CONNECT_KEYS)]
+    if not donors:
+        die("no healthy open-connect profile to copy routing/keys from")
+    donor = donors[0]
+    print(f"donor profile: {donor}")
+    for n in names:
+        done = []
+        if not on_open_connect(cfgs[n]):
+            cfg = cfgs[n]
+            cfg["model"] = dict(cfgs[donor]["model"])
+            cfg["fallback_providers"] = list(cfgs[donor].get("fallback_providers") or [])
+            put_config(d, cfg, n)
+            done.append("routing -> open-connect")
+        for k in OPEN_CONNECT_KEYS:
+            if keys[n].get(k):
+                continue
+            status, body = d.call("POST", "/api/env/reveal", {"key": k, "profile": donor})
+            value = body.get("value") if isinstance(body, dict) else None
+            if status >= 400 or not value:
+                print(f"::warning::{n}: could not read {k} from {donor} (HTTP {status})")
+                continue
+            status, _ = d.call("PUT", "/api/env", {"key": k, "value": value, "profile": n})
+            value = None
+            done.append(f"{k} set" if status < 400 else f"{k} FAILED (HTTP {status})")
+        if done:
+            print(f"  {n}: {', '.join(done)}")
+    print("profiles checked:", len(names))
+
+
+def restart_gateway(d: Dashboard) -> None:
+    status, _ = d.call("POST", "/api/gateway/restart", {})
+    print(f"gateway restart requested (HTTP {status})")
+
+
 def main() -> None:
     action = sys.argv[1] if len(sys.argv) > 1 else "diagnose"
     d = login()
     if action == "diagnose":
         diagnose(d)
+    elif action == "fix":
+        fix_default(d)
+        fix_profiles(d)
+        restart_gateway(d)
     else:
         die(f"unknown action {action}")
 
