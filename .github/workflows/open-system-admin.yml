@@ -8,7 +8,7 @@ on:
     inputs:
       action:
         type: choice
-        options: [diagnose, fix]
+        options: [diagnose, inventory, fix]
         default: diagnose
 
 permissions:
@@ -33,7 +33,7 @@ jobs:
         with:
           sparse-checkout: deploy
       - name: Volume snapshot before changes
-        if: inputs.action != 'diagnose'
+        if: inputs.action == 'fix'
         run: bash deploy/railway.sh backup "pre-admin-${{ inputs.action }}-$(date -u +%Y%m%dT%H%M)"
       - name: Run ${{ inputs.action }}
         shell: bash

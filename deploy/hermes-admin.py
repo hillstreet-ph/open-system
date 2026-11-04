@@ -7,6 +7,7 @@ names, providers, URLs and booleans only.
 
   hermes-admin.py diagnose     model routing, fallbacks, web provider, MCP servers,
                                per-profile key presence
+  hermes-admin.py inventory    plugins, toolsets, skills and MCP servers with their state
   hermes-admin.py fix          restore the intended routing and settings, then restart the gateway:
                                - default: main = open-connect (named provider `openai`,
                                  model open-connect/auto); model auto-rotation off (it kept
@@ -275,11 +276,60 @@ def restart_gateway(d: Dashboard) -> None:
     print(f"gateway restart requested (HTTP {status})")
 
 
+STATE_KEYS = ("enabled", "available", "configured", "is_configured", "installed", "connected",
+              "status", "state", "error", "reason", "missing_env", "requires_env")
+
+
+def rows(body: object, *keys: str) -> list:
+    """First list found in the response (top level or under a known key)."""
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        for k in keys:
+            if isinstance(body.get(k), list):
+                return body[k]
+            if isinstance(body.get(k), dict):
+                return [dict(v, name=n) if isinstance(v, dict) else {"name": n, "value": v} for n, v in body[k].items()]
+    return []
+
+
+def brief(row: object) -> str:
+    if not isinstance(row, dict):
+        return str(row)[:80]
+    name = row.get("name") or row.get("id") or row.get("key") or "?"
+    bits = []
+    for k in STATE_KEYS:
+        if k in row and row[k] not in (None, "", [], {}):
+            v = row[k]
+            v = ",".join(map(str, v)) if isinstance(v, list) else str(v)
+            bits.append(f"{k}={v[:80]}")
+    return f"{name} " + " ".join(bits)
+
+
+def inventory(d: Dashboard) -> None:
+    cfg = config(d)
+    plugins = (cfg.get("plugins") or {}).get("enabled") if isinstance(cfg.get("plugins"), dict) else cfg.get("plugins")
+    print(f"== plugins enabled: {plugins}")
+    for title, path, keys in (("toolsets", "/api/tools/toolsets", ("toolsets", "items")),
+                              ("mcp servers", "/api/mcp/servers", ("servers", "items")),
+                              ("skills", "/api/skills", ("skills", "items"))):
+        items = rows(d.get(path), *keys)
+        print(f"== {title}: {len(items)}")
+        if title == "skills":
+            off = [r for r in items if isinstance(r, dict) and r.get("enabled") is False]
+            print(f"  disabled: {len(off)} -> {[r.get('name') for r in off][:60]}")
+            continue
+        for r in items:
+            print("  " + brief(r))
+
+
 def main() -> None:
     action = sys.argv[1] if len(sys.argv) > 1 else "diagnose"
     d = login()
     if action == "diagnose":
         diagnose(d)
+    elif action == "inventory":
+        inventory(d)
     elif action == "fix":
         fix_default(d)
         fix_profiles(d)
