@@ -38,6 +38,7 @@ on:
     paths:
       - deploy/open-system-compat.Dockerfile
       - deploy/open-system.release
+      - deploy/mcp-http/**
       - .github/workflows/open-system-compat-validation.yml
 
 permissions:
@@ -137,6 +138,10 @@ jobs:
     outputs:
       image: ${{ steps.publish.outputs.image }}
     steps:
+      # Build context for COPY deploy/mcp-http/*; the (possibly bumped) Dockerfile comes from the plan artifact.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          sparse-checkout: deploy
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: compat-dockerfile
@@ -167,6 +172,10 @@ jobs:
             /opt/hermes/.venv/bin/python -c "from pathlib import Path; from pm.environments import activate_dependencies; activate_dependencies(Path(\"/opt/hermes\")); import mcp.server, langfuse, httpx, cryptography"
             /opt/hermes/.venv/bin/hermes mcp-serve --help > /tmp/mcp-help.txt
             grep -q "stdio MCP server" /tmp/mcp-help.txt
+            test -f /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-mcp-http
+            test -x /etc/s6-overlay/s6-rc.d/hermes-mcp-http/run
+            /opt/mcp-http/bin/python -I -c "import mcp_proxy.mcp_server, mcp_proxy.proxy_server"
+            if MCP_HTTP_TOKEN=short /opt/mcp-http/bin/python -I /opt/mcp-http/server.py; then echo "mcp-http started without a valid token" >&2; exit 1; fi
           '
       - name: Publish tested image under an immutable tag
         id: publish
@@ -230,6 +239,10 @@ jobs:
         if: steps.cfg.outputs.ready == 'true' && env.RAILWAY_VOLUME_INSTANCE_ID != ''
         shell: bash
         run: bash deploy/railway.sh backup "pre-deploy-${TAG}"
+      - name: Ensure MCP bridge token (mcp.open-system.space)
+        if: steps.cfg.outputs.ready == 'true'
+        shell: bash
+        run: bash deploy/railway.sh ensure-secret MCP_HTTP_TOKEN
       - name: Deploy image to Railway
         if: steps.cfg.outputs.ready == 'true'
         id: rollout
@@ -257,6 +270,16 @@ jobs:
           done
           echo "healthy=false" >> "$GITHUB_OUTPUT"
           exit 1
+      - name: MCP bridge check (warning only)
+        if: steps.cfg.outputs.ready == 'true' && steps.gate.outputs.healthy == 'true'
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://mcp.open-system.space/healthz)"
+            [ "$code" = 204 ] && { echo "- MCP bridge healthy (mcp.open-system.space)" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+            sleep 10
+          done
+          echo "::warning::mcp.open-system.space/healthz returned $code"
       - name: Roll back to the previous release
         if: failure() && steps.prev.outputs.prev != '' && (steps.rollout.outcome == 'failure' || steps.gate.outcome == 'failure')
         shell: bash

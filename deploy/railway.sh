@@ -8,6 +8,8 @@
 #   railway.sh redeploy                   redeploy the current image (self-heal)
 #   railway.sh backup <name>              snapshot the persistent volume (native Railway backup)
 #   railway.sh current-image              print the image currently configured
+#   railway.sh ensure-secret <NAME>       create a random service variable if absent (value never printed;
+#                                         applied on the next deploy)
 set -euo pipefail
 
 API="https://backboard.railway.com/graphql/v2"
@@ -67,6 +69,24 @@ case "${1:-}" in
     gql 'query($s:String!,$e:String!){serviceInstance(serviceId:$s,environmentId:$e){source{image}}}' "$(vars)" \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["serviceInstance"]["source"]["image"] or "")'
     ;;
+  ensure-secret)
+    name="${2:?variable name}"
+    case "$name" in *[!A-Z0-9_]*) echo "invalid variable name" >&2; exit 2 ;; esac
+    project="$(gql 'query($s:String!){service(id:$s){projectId}}' "$(vars)" \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["service"]["projectId"])')"
+    if gql 'query($p:String!,$s:String!,$e:String!){variables(projectId:$p,serviceId:$s,environmentId:$e)}' "$(vars "p=$project")" \
+         | NAME="$name" python3 -c 'import json,os,sys; sys.exit(0 if os.environ["NAME"] in json.load(sys.stdin)["data"]["variables"] else 1)'; then
+      echo "$name already set; left unchanged"
+    else
+      payload="$(NAME="$name" P="$project" python3 -c '
+import json, os, secrets
+print(json.dumps({"p": os.environ["P"], "s": os.environ["RAILWAY_SERVICE_ID"], "e": os.environ["RAILWAY_ENVIRONMENT_ID"],
+                  "n": os.environ["NAME"], "v": secrets.token_urlsafe(48)}))')"
+      gql 'mutation($p:String!,$s:String!,$e:String!,$n:String!,$v:String!){variableUpsert(input:{projectId:$p,serviceId:$s,environmentId:$e,name:$n,value:$v,skipDeploys:true})}' "$payload" >/dev/null
+      unset payload
+      echo "$name created (value stored only in Railway)"
+    fi
+    ;;
   *)
-    echo "usage: $0 image <ref> | redeploy | backup <name> | current-image" >&2; exit 2 ;;
+    echo "usage: $0 image <ref> | redeploy | backup <name> | current-image | ensure-secret <NAME>" >&2; exit 2 ;;
 esac
