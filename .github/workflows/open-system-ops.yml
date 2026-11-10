@@ -55,7 +55,7 @@ jobs:
           print("version=%s gateway=%s telegram=%s" % (s.get("version"), s.get("gateway_state"), tg))
           sys.exit(0 if s.get("gateway_running") is True and tg in (None, "connected") else 1)'
           }
-          for i in 1 2 3; do check && { echo "healthy=true" >> "$GITHUB_OUTPUT"; exit 0; }; sleep 20; done
+          for _ in 1 2 3; do check && { echo "healthy=true" >> "$GITHUB_OUTPUT"; exit 0; }; sleep 20; done
           echo "healthy=false" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         if: steps.probe.outputs.healthy == 'false'
@@ -68,7 +68,7 @@ jobs:
         run: |
           set -uo pipefail
           bash deploy/railway.sh redeploy
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             sleep 15
             curl -fsS --max-time 20 "$STATUS_URL" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("gateway_running") else 1)' \
               && { echo "recovered=true" >> "$GITHUB_OUTPUT"; exit 0; }
