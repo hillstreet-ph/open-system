@@ -34,6 +34,8 @@ jobs:
           sparse-checkout: deploy
       - name: Volume snapshot before changes
         if: inputs.action == 'fix'
+        # Config-only change; off-site backups run continuously. A full Railway backup quota must not block repairs.
+        continue-on-error: true
         run: bash deploy/railway.sh backup "pre-admin-${{ inputs.action }}-$(date -u +%Y%m%dT%H%M)"
       - name: Run ${{ inputs.action }}
         shell: bash
