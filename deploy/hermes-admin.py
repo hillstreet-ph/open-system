@@ -344,6 +344,23 @@ MCP_KEEP = {
 GITHUB_MCP = {"url": "https://api.githubcopilot.com/mcp/",
               "headers": {"Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"}, "enabled": True}
 MAX_CONCURRENT_CHILDREN = 4  # was 20: each child is a full agent session with its own MCP clients
+# Plugins whose stdio MCP servers (npm exec + node + native binaries, ~40 threads per copy) are
+# spawned again for every profile/session. The container's cgroup allows 1000 pids; on 2026-11-10
+# snyk/meshy/rea copies alone held several hundred, which exhausted it. Disabled in every profile
+# (moved to plugins.disabled, so they can be re-enabled per profile in the dashboard).
+PLUGINS_OFF = ("snyk", "meshy", "rea")
+
+
+def trim_plugins(cfg: dict) -> list[str]:
+    plugins = cfg.get("plugins") if isinstance(cfg.get("plugins"), dict) else None
+    if plugins is None or not isinstance(plugins.get("enabled"), list):
+        return []
+    hit = [n for n in PLUGINS_OFF if n in plugins["enabled"]]
+    if hit:
+        plugins["enabled"] = [n for n in plugins["enabled"] if n not in hit]
+        disabled = plugins.get("disabled") if isinstance(plugins.get("disabled"), list) else []
+        plugins["disabled"] = sorted(set(disabled) | set(hit))
+    return hit
 
 
 def optimize(d: Dashboard) -> bool:
@@ -370,8 +387,22 @@ def optimize(d: Dashboard) -> bool:
         deleg["max_concurrent_children"] = MAX_CONCURRENT_CHILDREN
         cfg["delegation"] = deleg
         changes.append(f"delegation.max_concurrent_children -> {MAX_CONCURRENT_CHILDREN}")
+    hit = trim_plugins(cfg)
+    if hit:
+        changes.append(f"plugins disabled: {hit}")
     if changes:
         put_config(d, cfg, None)
+    for name in (n for n in profiles(d) if n != "default"):
+        status, body = d.call("GET", "/api/config/raw?" + urllib.parse.urlencode({"profile": name}))
+        text = (body.get("yaml") or body.get("yaml_text")) if isinstance(body, dict) else None
+        if status >= 400 or text is None:
+            print(f"  ::warning::profile {name}: config unreadable (HTTP {status})")
+            continue
+        pcfg = yaml.safe_load(text) or {}
+        phit = trim_plugins(pcfg)
+        if phit:
+            put_config(d, pcfg, name)
+            changes.append(f"{name}: plugins disabled {phit}")
     enabled = sorted(n for n, s in servers.items() if isinstance(s, dict) and s.get("enabled", True))
     print(f"optimize: {'; '.join(changes) or 'already optimized'}")
     print(f"  enabled MCP servers ({len(enabled)}): {enabled}")
