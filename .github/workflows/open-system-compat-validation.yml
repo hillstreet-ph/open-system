@@ -280,7 +280,7 @@ jobs:
         if: steps.cfg.outputs.ready == 'true' && steps.gate.outputs.healthy == 'true'
         shell: bash
         run: |
-          for i in 1 2 3 4 5 6; do
+          for _ in 1 2 3 4 5 6; do
             code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://mcp.open-system.space/healthz)"
             [ "$code" = 204 ] && { echo "- MCP bridge healthy (mcp.open-system.space)" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
             sleep 10
@@ -294,7 +294,7 @@ jobs:
         run: |
           set -euo pipefail
           bash deploy/railway.sh image "docker.io/${IMAGE_REPO}:${PREV}"
-          for i in $(seq 1 40); do
+          for _ in $(seq 1 40); do
             sleep 15
             if curl -fsS --max-time 15 "$STATUS_URL" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("gateway_running") else 1)'; then
               echo "- rolled back to \`${IMAGE_REPO}:${PREV}\` and gateway is running" >> "$GITHUB_STEP_SUMMARY"; exit 0
