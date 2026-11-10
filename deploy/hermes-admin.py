@@ -7,11 +7,14 @@ names, providers, URLs and booleans only.
 
   hermes-admin.py diagnose     model routing, fallbacks, web provider, MCP servers,
                                per-profile key presence
+  hermes-admin.py inventory    plugins, toolsets, skills and MCP servers with their state
   hermes-admin.py fix          restore the intended routing and settings, then restart the gateway:
                                - default: main = open-connect (named provider `openai`,
                                  model open-connect/auto); model auto-rotation off (it kept
                                  rewriting the main model to openrouter models served from
                                  open-connect with the wrong key -> HTTP 401)
+                               - duplicate YAML keys removed (Hermes rejects the whole config)
+                               - default fallback chain restored when empty
                                - web.search_backend `brave` (no longer registered) -> keenable
                                - profiles whose main model is not open-connect get the routing
                                  block of a healthy open-connect profile
@@ -134,13 +137,41 @@ def profiles(d: Dashboard) -> list[str]:
     return [n for n in names if n]
 
 
-def config(d: Dashboard, profile: str | None = None) -> dict:
+def config_text(d: Dashboard, profile: str | None = None) -> str:
     q = "?" + urllib.parse.urlencode({"profile": profile}) if profile else ""
     body = d.get(f"/api/config/raw{q}")
     text = (body.get("yaml") or body.get("yaml_text")) if isinstance(body, dict) else None
     if text is None:
         die(f"config/raw returned no yaml (keys: {sorted(body) if isinstance(body, dict) else type(body).__name__})")
-    return yaml.safe_load(text) or {}
+    return text
+
+
+def config(d: Dashboard, profile: str | None = None) -> dict:
+    # PyYAML keeps the last value of a duplicated key; Hermes (ruamel) rejects the whole file.
+    return yaml.safe_load(config_text(d, profile)) or {}
+
+
+def duplicate_keys(text: str) -> list[str]:
+    """Keys repeated in any mapping of the document (Hermes refuses such a config)."""
+    dups: list[str] = []
+
+    def walk(node: yaml.Node, path: str) -> None:
+        if isinstance(node, yaml.MappingNode):
+            seen: set[str] = set()
+            for k, v in node.value:
+                key = str(getattr(k, "value", k))
+                if key in seen:
+                    dups.append(f"{path}{key}")
+                seen.add(key)
+                walk(v, f"{path}{key}.")
+        elif isinstance(node, yaml.SequenceNode):
+            for i, v in enumerate(node.value):
+                walk(v, f"{path}[{i}].")
+
+    root = yaml.compose(text)
+    if root is not None:
+        walk(root, "")
+    return dups
 
 
 def routing(cfg: dict) -> str:
@@ -197,6 +228,13 @@ def diagnose(d: Dashboard) -> None:
 OPEN_CONNECT_URL = "https://open-connect.site/v1"
 OPEN_CONNECT_KEYS = (OPEN_CONNECT_KEY, "OPEN_CONNECT_API_KEY", "MCP_OPEN_CONNECT_API_KEY")
 WEB_SEARCH_DEFAULT = "keenable"  # keyless tier; `brave` was renamed `brave-free` and needs a key
+# Intended chain after the open-connect main model: ChatGPT subscription first, then the rest.
+DEFAULT_FALLBACKS = [
+    {"provider": "openai-codex", "model": "gpt-6-sol"},
+    {"provider": "xai-oauth", "model": "grok-4.7"},
+    {"provider": "openrouter", "model": "minimax/minimax-m3:free"},
+    {"provider": "deepseek", "model": "deepseek-flash"},
+]
 
 
 def put_config(d: Dashboard, cfg: dict, profile: str | None) -> None:
@@ -213,8 +251,15 @@ def on_open_connect(cfg: dict) -> bool:
 
 
 def fix_default(d: Dashboard) -> None:
-    cfg = config(d)
+    text = config_text(d)
+    cfg = yaml.safe_load(text) or {}
     changes = []
+    dups = duplicate_keys(text)
+    if dups:
+        changes.append(f"removed duplicate keys {sorted(set(dups))}")
+    if not cfg.get("fallback_providers"):
+        cfg["fallback_providers"] = [dict(f) for f in DEFAULT_FALLBACKS]
+        changes.append("fallback_providers restored (codex -> xai -> openrouter -> deepseek)")
     m = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     if not on_open_connect(cfg) or m.get("auto_rotation") or m.get("continuous_rotation"):
         m.update({"provider": "openai", "default": "open-connect/auto", "base_url": OPEN_CONNECT_URL,
@@ -238,7 +283,8 @@ def fix_default(d: Dashboard) -> None:
 
 def fix_profiles(d: Dashboard) -> None:
     names = [n for n in profiles(d) if n != "default"]
-    cfgs = {n: config(d, n) for n in names}
+    texts = {n: config_text(d, n) for n in names}
+    cfgs = {n: yaml.safe_load(texts[n]) or {} for n in names}
     keys = {n: env_keys(d.get("/api/env?" + urllib.parse.urlencode({"profile": n}))) for n in names}
     donors = [n for n in names if on_open_connect(cfgs[n]) and all(keys[n].get(k) for k in OPEN_CONNECT_KEYS)]
     if not donors:
@@ -247,6 +293,10 @@ def fix_profiles(d: Dashboard) -> None:
     print(f"donor profile: {donor}")
     for n in names:
         done = []
+        dups = duplicate_keys(texts[n])
+        if dups and on_open_connect(cfgs[n]):
+            put_config(d, cfgs[n], n)
+            done.append(f"removed duplicate keys {sorted(set(dups))}")
         if not on_open_connect(cfgs[n]):
             cfg = cfgs[n]
             cfg["model"] = dict(cfgs[donor]["model"])
@@ -275,11 +325,60 @@ def restart_gateway(d: Dashboard) -> None:
     print(f"gateway restart requested (HTTP {status})")
 
 
+STATE_KEYS = ("enabled", "available", "configured", "is_configured", "installed", "connected",
+              "status", "state", "error", "reason", "missing_env", "requires_env")
+
+
+def rows(body: object, *keys: str) -> list:
+    """First list found in the response (top level or under a known key)."""
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        for k in keys:
+            if isinstance(body.get(k), list):
+                return body[k]
+            if isinstance(body.get(k), dict):
+                return [dict(v, name=n) if isinstance(v, dict) else {"name": n, "value": v} for n, v in body[k].items()]
+    return []
+
+
+def brief(row: object) -> str:
+    if not isinstance(row, dict):
+        return str(row)[:80]
+    name = row.get("name") or row.get("id") or row.get("key") or "?"
+    bits = []
+    for k in STATE_KEYS:
+        if k in row and row[k] not in (None, "", [], {}):
+            v = row[k]
+            v = ",".join(map(str, v)) if isinstance(v, list) else str(v)
+            bits.append(f"{k}={v[:80]}")
+    return f"{name} " + " ".join(bits)
+
+
+def inventory(d: Dashboard) -> None:
+    cfg = config(d)
+    plugins = (cfg.get("plugins") or {}).get("enabled") if isinstance(cfg.get("plugins"), dict) else cfg.get("plugins")
+    print(f"== plugins enabled: {plugins}")
+    for title, path, keys in (("toolsets", "/api/tools/toolsets", ("toolsets", "items")),
+                              ("mcp servers", "/api/mcp/servers", ("servers", "items")),
+                              ("skills", "/api/skills", ("skills", "items"))):
+        items = rows(d.get(path), *keys)
+        print(f"== {title}: {len(items)}")
+        if title == "skills":
+            off = [r for r in items if isinstance(r, dict) and r.get("enabled") is False]
+            print(f"  disabled: {len(off)} -> {[r.get('name') for r in off][:60]}")
+            continue
+        for r in items:
+            print("  " + brief(r))
+
+
 def main() -> None:
     action = sys.argv[1] if len(sys.argv) > 1 else "diagnose"
     d = login()
     if action == "diagnose":
         diagnose(d)
+    elif action == "inventory":
+        inventory(d)
     elif action == "fix":
         fix_default(d)
         fix_profiles(d)
