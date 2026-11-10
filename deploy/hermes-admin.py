@@ -378,6 +378,33 @@ def optimize(d: Dashboard) -> bool:
     return bool(changes)
 
 
+PROCS_PROMPT = (
+    "Run exactly this single terminal command and reply with ONLY its raw output, no commentary:\n"
+    "cat /sys/fs/cgroup/pids.max /sys/fs/cgroup/pids.current 2>/dev/null; grep -i 'max processes' /proc/self/limits; "
+    "ps -eLf | wc -l; ps -eo nlwp,rss,etime,comm --sort=-nlwp | head -25; ps -eo comm | sort | uniq -c | sort -rn | head -15")
+
+
+def procs() -> None:
+    """Thread/process census of the container through the agent's terminal tool (API server).
+    Prints process names and counts only, never command lines (they can carry credentials)."""
+    env = service_vars()
+    key = env.get("API_SERVER_KEY")
+    if not key:
+        die("API_SERVER_KEY not set on the Railway service")
+    api = os.environ.get("API_URL", "https://api.open-system.space").rstrip("/")
+    body = json.dumps({"model": "hermes-agent", "stream": False,
+                       "messages": [{"role": "user", "content": PROCS_PROMPT}]}).encode()
+    req = urllib.request.Request(api + "/v1/chat/completions", body, method="POST", headers={
+        "Content-Type": "application/json", "Authorization": f"Bearer {key}", "User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            reply = json.load(r)
+    except urllib.error.HTTPError as err:
+        die(f"API server -> HTTP {err.code}")
+    text = (((reply.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    print(text[:6000])
+
+
 def restart_gateway(d: Dashboard) -> None:
     status, _ = d.call("POST", "/api/gateway/restart", {})
     print(f"gateway restart requested (HTTP {status})")
@@ -432,6 +459,9 @@ def inventory(d: Dashboard) -> None:
 
 def main() -> None:
     action = sys.argv[1] if len(sys.argv) > 1 else "diagnose"
+    if action == "procs":
+        procs()
+        return
     d = login()
     if action == "diagnose":
         diagnose(d)
