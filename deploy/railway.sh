@@ -79,12 +79,17 @@ for r in removable[: max(0, excess)]:
     print(r["id"], r["createdAt"], r.get("name") or "-")')"
     while read -r bid bdate bname; do
       [ -n "$bid" ] || continue
-      gql 'mutation($v:String!,$b:String!){volumeInstanceBackupDelete(volumeInstanceId:$v,volumeInstanceBackupId:$b){workflowId}}' \
-        "$(B="$bid" python3 -c 'import json,os; print(json.dumps({"v":os.environ["RAILWAY_VOLUME_INSTANCE_ID"],"b":os.environ["B"]}))')" >/dev/null
-      echo "rotated out manual backup ${bname} (${bdate})"
+      del="$(B="$bid" python3 -c 'import json,os; print(json.dumps({"v":os.environ["RAILWAY_VOLUME_INSTANCE_ID"],"b":os.environ["B"]}))')"
+      for attempt in $(seq 1 15); do   # Railway runs one backup deletion at a time
+        if gql 'mutation($v:String!,$b:String!){volumeInstanceBackupDelete(volumeInstanceId:$v,volumeInstanceBackupId:$b){workflowId}}' "$del" >/dev/null 2>&1; then
+          echo "rotated out manual backup ${bname} (${bdate})"; break
+        fi
+        [ "$attempt" = 15 ] && echo "::warning::could not delete backup ${bname} (${bdate}) yet"
+        sleep 20
+      done
     done <<< "$victims"
     payload="$(python3 -c 'import json,os,sys; print(json.dumps({"v":os.environ["RAILWAY_VOLUME_INSTANCE_ID"],"n":sys.argv[1]}))' "$name")"
-    for attempt in 1 2 3 4 5 6; do   # deletions finish asynchronously
+    for attempt in $(seq 1 15); do   # deletions finish asynchronously
       if gql 'mutation($v:String!,$n:String){volumeInstanceBackupCreate(volumeInstanceId:$v,name:$n){workflowId}}' "$payload" >/dev/null; then
         echo "volume backup requested: ${name}"; exit 0
       fi
