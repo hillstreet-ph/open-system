@@ -69,13 +69,13 @@ case "${1:-}" in
     name="${2:-manual}"
     vol="$(python3 -c 'import json,os; print(json.dumps({"v":os.environ["RAILWAY_VOLUME_INSTANCE_ID"]}))')"
     list="$(gql 'query($v:String!){volumeInstanceBackupList(volumeInstanceId:$v){id name createdAt scheduleId}}' "$vol")"
-    victims="$(printf '%s' "$list" | MAX="${RAILWAY_BACKUP_MAX:-10}" KEEP="${RAILWAY_BACKUP_KEEP_MANUAL:-3}" python3 -c '
+    victims="$(printf '%s' "$list" | MAX="${RAILWAY_BACKUP_MAX:-10}" KEEP="${RAILWAY_BACKUP_KEEP_MANUAL:-3}" MAX_DELETE="${RAILWAY_BACKUP_MAX_DELETE:-2}" python3 -c '
 import json, os, sys
 rows = json.load(sys.stdin)["data"]["volumeInstanceBackupList"]
 manual = sorted((r for r in rows if not r.get("scheduleId")), key=lambda r: r["createdAt"])
 excess = len(rows) - (int(os.environ["MAX"]) - 1)          # leave room for the new backup
 removable = manual[: max(0, len(manual) - int(os.environ["KEEP"]))]
-for r in removable[: max(0, excess)]:
+for r in removable[: min(max(0, excess), int(os.environ.get("MAX_DELETE", "2")))]:  # cap per run
     print(r["id"], r["createdAt"], r.get("name") or "-")')"
     while read -r bid bdate bname; do
       [ -n "$bid" ] || continue
