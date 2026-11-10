@@ -1,14 +1,17 @@
 # Production Hermes admin tasks against the dashboard API (deploy/hermes-admin.py).
 # The dashboard login is read from Railway with RAILWAY_TOKEN inside the job; nothing secret
-# is printed. Manual dispatch only.
+# is printed. Manual dispatch, plus a scheduled `guard` that corrects drifted default model routing
+# (auto-rotation re-enabled, provider moved off open-connect) and restarts the gateway only then.
 name: Open-System admin
 
 on:
+  schedule:
+    - cron: "17 */2 * * *"
   workflow_dispatch:
     inputs:
       action:
         type: choice
-        options: [diagnose, inventory, fix]
+        options: [diagnose, inventory, fix, guard]
         default: diagnose
 
 permissions:
@@ -37,10 +40,10 @@ jobs:
         # Config-only change; off-site backups run continuously. A full Railway backup quota must not block repairs.
         continue-on-error: true
         run: bash deploy/railway.sh backup "pre-admin-${{ inputs.action }}-$(date -u +%Y%m%dT%H%M)"
-      - name: Run ${{ inputs.action }}
+      - name: Run ${{ inputs.action || 'guard' }}
         shell: bash
         env:
-          ACTION: ${{ inputs.action }}
+          ACTION: ${{ inputs.action || 'guard' }}
         run: |
           set -euo pipefail
           python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --user --break-system-packages pyyaml
