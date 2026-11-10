@@ -35,3 +35,13 @@ RUN set -eu; \
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-mcp-http; \
     chmod 0755 /etc/s6-overlay/s6-rc.d/hermes-mcp-http/run /opt/mcp-http/server.py; \
     /opt/mcp-http/bin/python -I -c "import mcp_proxy.mcp_server, mcp_proxy.proxy_server"
+
+# Encrypted off-site backup service (Supabase open-system-backup-ingest), replacing the agent cron job.
+COPY deploy/offsite-backup/offsite_backup.py /opt/offsite-backup/offsite_backup.py
+COPY deploy/offsite-backup/run /etc/s6-overlay/s6-rc.d/hermes-offsite-backup/run
+RUN set -eu; \
+    echo longrun > /etc/s6-overlay/s6-rc.d/hermes-offsite-backup/type; \
+    mkdir -p /etc/s6-overlay/s6-rc.d/hermes-offsite-backup/dependencies.d; \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-offsite-backup; \
+    chmod 0755 /etc/s6-overlay/s6-rc.d/hermes-offsite-backup/run /opt/offsite-backup/offsite_backup.py; \
+    /opt/hermes/.venv/bin/python -I -c "import cryptography.fernet" && /opt/hermes/.venv/bin/python -I -m py_compile /opt/offsite-backup/offsite_backup.py
