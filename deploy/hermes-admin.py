@@ -8,6 +8,8 @@ names, providers, URLs and booleans only.
   hermes-admin.py diagnose     model routing, fallbacks, web provider, MCP servers,
                                per-profile key presence
   hermes-admin.py inventory    plugins, toolsets, skills and MCP servers with their state
+  hermes-admin.py optimize     keep only the production MCP servers enabled (others disabled, not
+                               removed), add the GitHub MCP, cap concurrent subagents at 4
   hermes-admin.py fix          restore the intended routing and settings, then restart the gateway:
                                - default: main = open-connect (named provider `openai`,
                                  model open-connect/auto); model auto-rotation off (it kept
@@ -219,8 +221,14 @@ def diagnose(d: Dashboard) -> None:
         provider_keys = sorted(k for k, v in keys.items() if v and re.search(r"(API_KEY|TOKEN)$", k))
         print(f"  {name}: {OPEN_CONNECT_KEY}={'yes' if keys.get(OPEN_CONNECT_KEY) else 'NO'} "
               f"keys_set={len([v for v in keys.values() if v])} provider_keys={provider_keys}")
-        print(f"    {routing(config(d, name))}")
-        providers = config(d, name).get("custom_providers") or config(d, name).get("providers") or []
+        status, body = d.call("GET", "/api/config/raw?" + q)
+        text = (body.get("yaml") or body.get("yaml_text")) if isinstance(body, dict) else None
+        if status >= 400 or text is None:
+            print(f"    ::warning::config for profile {name} unreadable (HTTP {status})")
+            continue
+        pcfg = yaml.safe_load(text) or {}
+        print(f"    {routing(pcfg)}")
+        providers = pcfg.get("custom_providers") or pcfg.get("providers") or []
         if providers:
             print(f"    providers: {yaml.safe_dump(scrub(providers), default_flow_style=True, width=400).strip()[:1200]}")
 
@@ -321,6 +329,55 @@ def fix_profiles(d: Dashboard) -> None:
     print("profiles checked:", len(names))
 
 
+# MCP servers the production default profile keeps connected: the stack this deployment runs on
+# (GitHub, Docker Hub, Cloudflare, Supabase, Sentry, Railway, Linear), the open-connect gateway and
+# the hillstreet services. Every other server stays in config.yaml but disabled: each enabled server
+# is connected by every agent session, cron job and subagent, and 67 of them exhausted the
+# container's threads on 2026-11-10 (dashboard sign-in and SQLite writes failed). Re-enable one in
+# the dashboard when it is actually needed.
+MCP_KEEP = {
+    "github", "docker ai", "cloudflare", "cloudflare-docs", "supabase", "sentry", "railway", "linear",
+    "open-connect", "composio", "open-box", "open-tgate", "Open-Teleset", "teamily-local-runtime",
+    "context7", "deepwiki",
+}
+# GitHub's remote MCP has no dynamic client registration; a PAT header is the supported login.
+GITHUB_MCP = {"url": "https://api.githubcopilot.com/mcp/",
+              "headers": {"Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"}, "enabled": True}
+MAX_CONCURRENT_CHILDREN = 4  # was 20: each child is a full agent session with its own MCP clients
+
+
+def optimize(d: Dashboard) -> bool:
+    """Trim the default profile to the MCP servers and concurrency production needs (reversible)."""
+    cfg = config(d)
+    servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+    changes = []
+    if "github" not in servers:
+        servers["github"] = dict(GITHUB_MCP)
+        changes.append("github MCP added (PAT header)")
+    off = []
+    for name, spec in servers.items():
+        if not isinstance(spec, dict):
+            continue
+        want = name in MCP_KEEP
+        if bool(spec.get("enabled", True)) != want:
+            spec["enabled"] = want
+            (off if not want else changes).append(name if not want else f"{name} enabled")
+    if off:
+        changes.append(f"{len(off)} MCP servers disabled: {sorted(off)}")
+    cfg["mcp_servers"] = servers
+    deleg = cfg.get("delegation") if isinstance(cfg.get("delegation"), dict) else {}
+    if int(deleg.get("max_concurrent_children") or 0) > MAX_CONCURRENT_CHILDREN:
+        deleg["max_concurrent_children"] = MAX_CONCURRENT_CHILDREN
+        cfg["delegation"] = deleg
+        changes.append(f"delegation.max_concurrent_children -> {MAX_CONCURRENT_CHILDREN}")
+    if changes:
+        put_config(d, cfg, None)
+    enabled = sorted(n for n, s in servers.items() if isinstance(s, dict) and s.get("enabled", True))
+    print(f"optimize: {'; '.join(changes) or 'already optimized'}")
+    print(f"  enabled MCP servers ({len(enabled)}): {enabled}")
+    return bool(changes)
+
+
 def restart_gateway(d: Dashboard) -> None:
     status, _ = d.call("POST", "/api/gateway/restart", {})
     print(f"gateway restart requested (HTTP {status})")
@@ -384,6 +441,9 @@ def main() -> None:
         fix_default(d)
         fix_profiles(d)
         restart_gateway(d)
+    elif action == "optimize":
+        if optimize(d):
+            restart_gateway(d)
     elif action == "guard":
         # Scheduled drift guard: correct the default routing only when it drifted, and restart the
         # gateway only then, so a healthy run changes nothing.
