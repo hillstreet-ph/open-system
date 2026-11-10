@@ -69,6 +69,11 @@ case "${1:-}" in
     name="${2:-manual}"
     vol="$(python3 -c 'import json,os; print(json.dumps({"v":os.environ["RAILWAY_VOLUME_INSTANCE_ID"]}))')"
     list="$(gql 'query($v:String!){volumeInstanceBackupList(volumeInstanceId:$v){id name createdAt scheduleId}}' "$vol")"
+    printf '%s' "$list" | python3 -c '
+import json, sys
+rows = json.load(sys.stdin)["data"]["volumeInstanceBackupList"]
+sched = sum(1 for r in rows if r.get("scheduleId"))
+print(f"volume backups: {len(rows)} total, {sched} scheduled (Railway daily/weekly/monthly), {len(rows) - sched} manual")'
     victims="$(printf '%s' "$list" | MAX="${RAILWAY_BACKUP_MAX:-10}" KEEP="${RAILWAY_BACKUP_KEEP_MANUAL:-3}" MAX_DELETE="${RAILWAY_BACKUP_MAX_DELETE:-2}" python3 -c '
 import json, os, sys
 rows = json.load(sys.stdin)["data"]["volumeInstanceBackupList"]
@@ -89,13 +94,16 @@ for r in removable[: min(max(0, excess), int(os.environ.get("MAX_DELETE", "2")))
       done
     done <<< "$victims"
     payload="$(python3 -c 'import json,os,sys; print(json.dumps({"v":os.environ["RAILWAY_VOLUME_INSTANCE_ID"],"n":sys.argv[1]}))' "$name")"
-    for attempt in $(seq 1 15); do   # deletions finish asynchronously
+    # Deletions finish asynchronously, so wait for them; with nothing rotated out, the slots are held by
+    # Railway's own scheduled backups and waiting cannot help.
+    tries=15; [ -n "$victims" ] || tries=2
+    for attempt in $(seq 1 "$tries"); do
       if gql 'mutation($v:String!,$n:String){volumeInstanceBackupCreate(volumeInstanceId:$v,name:$n){workflowId}}' "$payload" >/dev/null; then
         echo "volume backup requested: ${name}"; exit 0
       fi
       sleep 20
     done
-    echo "volume backup could not be created: ${name}" >&2; exit 1
+    echo "volume backup could not be created: ${name} (slots held by Railway scheduled backups; off-site backups continue)" >&2; exit 1
     ;;
   current-image)
     gql 'query($s:String!,$e:String!){serviceInstance(serviceId:$s,environmentId:$e){source{image}}}' "$(vars)" \
