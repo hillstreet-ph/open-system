@@ -566,8 +566,15 @@ def main() -> None:
     elif action == "guard":
         # Scheduled drift guard: correct the default routing only when it drifted, and restart the
         # gateway only then, so a healthy run changes nothing.
-        if fix_default(d):
+        drifted = fix_default(d)
+        if drifted:
             print("::warning::default model routing had drifted and was corrected")
+        # Re-apply the MCP/plugin/concurrency limits: agent sessions have re-enabled snyk/meshy/rea,
+        # whose process copies filled the 1000-pid cgroup on 2026-11-10.
+        if optimize(d):
+            print("::warning::MCP servers, plugins or subagent limits had drifted and were reset")
+            drifted = True
+        if drifted:
             restart_gateway(d)
     else:
         die(f"unknown action {action}")
