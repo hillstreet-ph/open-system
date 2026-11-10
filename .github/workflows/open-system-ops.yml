@@ -33,6 +33,7 @@ env:
   RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
   RAILWAY_VOLUME_INSTANCE_ID: ${{ vars.RAILWAY_VOLUME_INSTANCE_ID }}
   STATUS_URL: ${{ vars.OPEN_SYSTEM_STATUS_URL || 'https://open-system.space/api/status' }}
+  AUTH_PROVIDERS_URL: ${{ vars.OPEN_SYSTEM_AUTH_PROVIDERS_URL || 'https://open-system.space/api/auth/providers' }}
 
 jobs:
   health:
@@ -53,7 +54,15 @@ jobs:
           s = json.load(sys.stdin)
           tg = (s.get("gateway_platforms") or {}).get("telegram", {}).get("state")
           print("version=%s gateway=%s telegram=%s" % (s.get("version"), s.get("gateway_state"), tg))
-          sys.exit(0 if s.get("gateway_running") is True and tg in (None, "connected") else 1)'
+          sys.exit(0 if s.get("gateway_running") is True and tg in (None, "connected") else 1)' || return 1
+            # The dashboard sign-in needs a registered auth provider. When the container runs out of
+            # threads/processes, provider registration fails and the login page shows "Sign-in
+            # unavailable" while /api/status still looks healthy (2026-11-10 incident).
+            curl -fsS --max-time 20 "$AUTH_PROVIDERS_URL" | python3 -c '
+          import json, sys
+          n = len(json.load(sys.stdin).get("providers") or [])
+          print("dashboard auth providers=%d" % n)
+          sys.exit(0 if n else 1)'
           }
           for _ in 1 2 3; do check && { echo "healthy=true" >> "$GITHUB_OUTPUT"; exit 0; }; sleep 20; done
           echo "healthy=false" >> "$GITHUB_OUTPUT"
@@ -71,6 +80,7 @@ jobs:
           for _ in $(seq 1 30); do
             sleep 15
             curl -fsS --max-time 20 "$STATUS_URL" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("gateway_running") else 1)' \
+              && curl -fsS --max-time 20 "$AUTH_PROVIDERS_URL" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("providers") else 1)' \
               && { echo "recovered=true" >> "$GITHUB_OUTPUT"; exit 0; }
           done
           echo "recovered=false" >> "$GITHUB_OUTPUT"
