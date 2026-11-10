@@ -436,6 +436,33 @@ def procs() -> None:
     print(text[:6000])
 
 
+# Agent cron jobs that manage the host themselves (start extra gateways with `hermes gateway run
+# --force`, kill processes, run their own backups). On 2026-11-10 they spawned gateways on ports
+# 8643-8645 and killed the main gateway (unclean exits), which filled the 1000-pid cgroup and put
+# the gateway in a restart loop. Operations belong to the ops/admin workflows and s6 services,
+# so these jobs are paused (not deleted; resume them in the dashboard).
+CRON_PAUSE = re.compile(r"self[-_ ]?heal|infra[-_ ]?monitor|devops[-_ ]?collector|open-system-backup|"
+                        r"gateway[-_ ]?(watch|monitor|guard)|auto[-_ ]?heal", re.I)
+
+
+def cron_jobs(d: Dashboard) -> None:
+    body = d.get("/api/cron/jobs?profile=all")
+    jobs = body.get("jobs", body) if isinstance(body, dict) else body
+    paused = []
+    for j in jobs or []:
+        if not isinstance(j, dict):
+            continue
+        name, prof = str(j.get("name") or j.get("id")), j.get("profile") or "default"
+        state = "paused" if j.get("paused") or j.get("enabled") is False or j.get("state") == "paused" else "active"
+        print(f"  [{prof}] {name}: schedule={j.get('schedule') or j.get('schedule_display')} state={state} "
+              f"last={j.get('last_status')}")
+        if state == "active" and CRON_PAUSE.search(name):
+            q = "?" + urllib.parse.urlencode({"profile": prof})
+            status, _ = d.call("POST", f"/api/cron/jobs/{j.get('id')}/pause{q}", {})
+            paused.append(f"{prof}/{name} (HTTP {status})")
+    print(f"cron jobs: {len(jobs or [])}; paused now: {paused or 'none'}")
+
+
 def restart_gateway(d: Dashboard) -> None:
     status, _ = d.call("POST", "/api/gateway/restart", {})
     print(f"gateway restart requested (HTTP {status})")
@@ -502,6 +529,8 @@ def main() -> None:
         fix_default(d)
         fix_profiles(d)
         restart_gateway(d)
+    elif action == "cron":
+        cron_jobs(d)
     elif action == "optimize":
         if optimize(d):
             restart_gateway(d)
