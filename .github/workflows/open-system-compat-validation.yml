@@ -38,6 +38,7 @@ on:
     paths:
       - deploy/open-system-compat.Dockerfile
       - deploy/mcp-http/**
+      - deploy/offsite-backup/**
       - .github/workflows/open-system-compat-validation.yml
 
 permissions:
@@ -175,6 +176,9 @@ jobs:
             grep -q "stdio MCP server" /tmp/mcp-help.txt
             test -f /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-mcp-http
             test -x /etc/s6-overlay/s6-rc.d/hermes-mcp-http/run
+            test -f /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-offsite-backup
+            test -x /etc/s6-overlay/s6-rc.d/hermes-offsite-backup/run
+            if HERMES_BACKUP_TRANSFER_TOKEN= HERMES_BACKUP_ENCRYPTION_KEY= HERMES_HOME=/tmp/hermes-test /opt/hermes/.venv/bin/python -I /opt/offsite-backup/offsite_backup.py --once; then echo "offsite backup ran without secrets" >&2; exit 1; fi
             /opt/mcp-http/bin/python -I -c "import mcp_proxy.mcp_server, mcp_proxy.proxy_server"
             if MCP_HTTP_TOKEN=short /opt/mcp-http/bin/python -I /opt/mcp-http/server.py; then echo "mcp-http started without a valid token" >&2; exit 1; fi
           '

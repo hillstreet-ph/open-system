@@ -1,0 +1,8 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Encrypted off-site backup to Supabase every OFFSITE_BACKUP_INTERVAL_HOURS (default 6); see
+# deploy/offsite-backup/offsite_backup.py. Dormant without HERMES_BACKUP_TRANSFER_TOKEN and
+# HERMES_BACKUP_ENCRYPTION_KEY. Runs at low CPU/IO priority so it never starves the gateway.
+set -eu
+cd "${HERMES_HOME:-/opt/data}"
+exec s6-setuidgid hermes nice -n 15 /opt/hermes/.venv/bin/python -I /opt/offsite-backup/offsite_backup.py

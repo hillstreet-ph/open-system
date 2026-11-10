@@ -47,6 +47,13 @@ path. Branches named `chore/hermes-v*-compat` only build, validate and publish.
 
 Railway's own volume backup schedule is also enabled (daily, weekly, monthly retention).
 
+Off-site: the image runs the s6 service `hermes-offsite-backup` (`deploy/offsite-backup/`). Every
+`OFFSITE_BACKUP_INTERVAL_HOURS` (default 6, first run 15 minutes after boot) it creates a
+consistent `hermes backup`, encrypts it in Fernet parts with `HERMES_BACKUP_ENCRYPTION_KEY` and
+uploads it to Supabase through `open-system-backup-ingest` (`HERMES_BACKUP_TRANSFER_TOKEN`). The
+server verifies each part and the manifest; the newest verified backup is what auto-restore uses.
+Last success: `/opt/data/backups/offsite/last-success`; logs: `[offsite-backup]` lines.
+
 Independent monitoring: Sentry uptime monitor **Open System API Health (Railway)**
 (`hillstreet` org, project `open-system`) checks `https://api.open-system.space/health`
 every minute.
