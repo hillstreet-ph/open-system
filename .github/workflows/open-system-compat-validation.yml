@@ -162,6 +162,8 @@ jobs:
             test -f /opt/hermes/plugins/mcp-serve/plugin.yaml
             test -f /opt/hermes/plugins/spotify/plugin.yaml
             test -f /opt/hermes/plugins/langfuse/plugin.yaml
+            test -f /opt/hermes/plugins/memory-wiki/plugin.yaml
+            test -f /opt/hermes/plugins/hermes-security/plugin.yaml
             /opt/hermes/.venv/bin/hermes --version > /tmp/version.txt
             grep -q "$HERMES_VERSION" /tmp/version.txt
             mkdir -p /tmp/hermes-test

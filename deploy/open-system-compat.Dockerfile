@@ -23,6 +23,20 @@ RUN set -eu; \
     test -f /opt/hermes/plugins/langfuse/plugin.yaml; \
     grep -q 'hermes mcp-serve' /etc/s6-overlay/s6-rc.d/hermes-mcp-tunnel/run
 
+# More official plugins (NousResearch/hermes-official-plugins), pinned to the commits the Hermes
+# plugin catalog lists (plugin-catalog/hermes-memory-wiki.yaml, hermes-security.yaml). Bundled in the
+# image so they survive redeploys; Python/UI only, no long-running processes.
+RUN set -eu; \
+    fetch() { d="$(mktemp -d)"; git -C "$d" init -q; \
+      git -C "$d" fetch -q --depth 1 https://github.com/NousResearch/hermes-official-plugins "$1"; \
+      git -C "$d" checkout -q FETCH_HEAD; test "$(git -C "$d" rev-parse HEAD)" = "$1"; \
+      cp -a "$d/$2" "/opt/hermes/plugins/$3"; rm -rf "$d"; }; \
+    fetch 54afaf5014db23346148436c4883eb64095e8060 memory-wiki memory-wiki; \
+    fetch 65f5ad93c7dc14dc661ff2ff3ead0fda71e7bd9d hermes-security hermes-security; \
+    rm -rf /opt/hermes/plugins/memory-wiki/tests /opt/hermes/plugins/hermes-security/tests /opt/hermes/plugins/hermes-security/evals; \
+    test -f /opt/hermes/plugins/memory-wiki/plugin.yaml; \
+    test -f /opt/hermes/plugins/hermes-security/plugin.yaml
+
 # Authenticated HTTP bridge for the Hermes MCP server (mcp.open-system.space, port 8765).
 # Separate venv: mcp-proxy needs mcp<2 while Hermes ships mcp 2.x. Dormant without MCP_HTTP_TOKEN.
 COPY deploy/mcp-http/requirements.lock deploy/mcp-http/server.py /opt/mcp-http/

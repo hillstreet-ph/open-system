@@ -11,7 +11,7 @@ on:
     inputs:
       action:
         type: choice
-        options: [diagnose, inventory, fix, guard, optimize, procs, cron]
+        options: [diagnose, inventory, fix, guard, optimize, procs, cron, skills-sync]
         default: diagnose
 
 permissions:
