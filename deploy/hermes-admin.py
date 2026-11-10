@@ -349,6 +349,9 @@ MAX_CONCURRENT_CHILDREN = 4  # was 20: each child is a full agent session with i
 # snyk/meshy/rea copies alone held several hundred, which exhausted it. Disabled in every profile
 # (moved to plugins.disabled, so they can be re-enabled per profile in the dashboard).
 PLUGINS_OFF = ("snyk", "meshy", "rea")
+# Official plugins bundled in the image (deploy/open-system-compat.Dockerfile) and enabled in the
+# default profile: Python/UI only, no long-running processes.
+PLUGINS_ON = ("memory-wiki", "hermes-security")
 
 
 def trim_plugins(cfg: dict) -> list[str]:
@@ -390,6 +393,12 @@ def optimize(d: Dashboard) -> bool:
     hit = trim_plugins(cfg)
     if hit:
         changes.append(f"plugins disabled: {hit}")
+    plugins = cfg.setdefault("plugins", {}) if isinstance(cfg.get("plugins", {}), dict) else None
+    if plugins is not None and isinstance(plugins.get("enabled"), list):
+        add = [n for n in PLUGINS_ON if n not in plugins["enabled"] and n not in (plugins.get("disabled") or [])]
+        if add:
+            plugins["enabled"] = plugins["enabled"] + add
+            changes.append(f"plugins enabled: {add}")
     if changes:
         put_config(d, cfg, None)
     for name in (n for n in profiles(d) if n != "default"):
@@ -463,6 +472,24 @@ def cron_jobs(d: Dashboard) -> None:
     print(f"cron jobs: {len(jobs or [])}; paused now: {paused or 'none'}")
 
 
+def skills_sync(d: Dashboard) -> None:
+    """Install every official optional skill (hermes-agent optional-skills) not yet installed in the
+    default profile, one at a time (each install is a short-lived `hermes skills install`), then
+    update installed hub skills. Skills are files only: no processes stay running."""
+    body = d.get("/api/skills/hub/official")
+    rows = body.get("skills", []) if isinstance(body, dict) else []
+    missing = [r["identifier"] for r in rows if isinstance(r, dict) and not r.get("installed") and r.get("identifier")]
+    print(f"official skills: {len(rows)} in catalog, {len(rows) - len(missing)} installed, {len(missing)} to install")
+    failed = []
+    for ident in missing:
+        status, _ = d.call("POST", "/api/skills/hub/install", {"identifier": ident})
+        if status >= 400:
+            failed.append(f"{ident} (HTTP {status})")
+        time.sleep(4)  # sequential: keep the container's process count low
+    status, _ = d.call("POST", "/api/skills/hub/update", {})
+    print(f"  install requests sent: {len(missing) - len(failed)}; failed: {failed or 'none'}; hub update HTTP {status}")
+
+
 def restart_gateway(d: Dashboard) -> None:
     status, _ = d.call("POST", "/api/gateway/restart", {})
     print(f"gateway restart requested (HTTP {status})")
@@ -529,6 +556,8 @@ def main() -> None:
         fix_default(d)
         fix_profiles(d)
         restart_gateway(d)
+    elif action == "skills-sync":
+        skills_sync(d)
     elif action == "cron":
         cron_jobs(d)
     elif action == "optimize":
