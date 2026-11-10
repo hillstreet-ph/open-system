@@ -250,7 +250,7 @@ def on_open_connect(cfg: dict) -> bool:
         and "open-connect" in str(m.get("default") or m.get("model") or "")
 
 
-def fix_default(d: Dashboard) -> None:
+def fix_default(d: Dashboard) -> bool:
     text = config_text(d)
     cfg = yaml.safe_load(text) or {}
     changes = []
@@ -279,6 +279,7 @@ def fix_default(d: Dashboard) -> None:
         put_config(d, cfg, None)
     print(f"default: {'; '.join(changes) or 'already correct'}")
     print(f"  now {routing(config(d))}")
+    return bool(changes)
 
 
 def fix_profiles(d: Dashboard) -> None:
@@ -383,6 +384,12 @@ def main() -> None:
         fix_default(d)
         fix_profiles(d)
         restart_gateway(d)
+    elif action == "guard":
+        # Scheduled drift guard: correct the default routing only when it drifted, and restart the
+        # gateway only then, so a healthy run changes nothing.
+        if fix_default(d):
+            print("::warning::default model routing had drifted and was corrected")
+            restart_gateway(d)
     else:
         die(f"unknown action {action}")
 

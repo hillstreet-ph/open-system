@@ -1,0 +1,38 @@
+# Fork-owned required check. Branch protection on main requires the status "ci"; upstream's
+# ci.yaml orchestrator runs on Blacksmith runners this org does not have, so it never reports.
+# This job validates the open-system deployment layer (deploy/ and the open-system-* workflows)
+# on GitHub-hosted runners and is what "ci" resolves to.
+name: Open-System CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-system-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Workflow lint (actionlint)
+        run: |
+          set -euo pipefail
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color .github/workflows/open-system-*.yml
+      - name: Deploy scripts
+        run: |
+          set -euo pipefail
+          for f in deploy/*.sh deploy/mcp-http/run; do bash -n "$f"; done
+          python3 -m py_compile deploy/*.py deploy/mcp-http/*.py
+          echo "deploy layer OK"
