@@ -6,7 +6,8 @@
 #
 #   railway.sh image <docker-image-ref>   set the service image and deploy it
 #   railway.sh redeploy                   redeploy the current image (self-heal)
-#   railway.sh backup <name>              snapshot the persistent volume (native Railway backup)
+#   railway.sh backup <name>              snapshot the persistent volume (native Railway backup), rotating
+#                                         out the oldest manual snapshots when the plan limit is reached
 #   railway.sh current-image              print the image currently configured
 #   railway.sh ensure-secret <NAME>       create a random service variable if absent (value never printed;
 #                                         applied on the next deploy)
@@ -60,10 +61,36 @@ case "${1:-}" in
     echo "redeploy requested"
     ;;
   backup)
+    # Railway allows RAILWAY_BACKUP_MAX (plan: 10) backups per volume. Before creating one, rotate out
+    # the oldest *manual* backups (scheduleId null: the ones this script makes). Railway's scheduled
+    # daily/weekly/monthly backups are never touched, and the newest RAILWAY_BACKUP_KEEP_MANUAL
+    # manual backups are always kept. Off-site encrypted backups in Supabase hold the full history.
     : "${RAILWAY_VOLUME_INSTANCE_ID:?}"
-    gql 'mutation($v:String!,$n:String){volumeInstanceBackupCreate(volumeInstanceId:$v,name:$n){workflowId}}' \
-      "$(python3 -c 'import json,os,sys; print(json.dumps({"v":os.environ["RAILWAY_VOLUME_INSTANCE_ID"],"n":sys.argv[1]}))' "${2:-manual}")" >/dev/null
-    echo "volume backup requested: ${2:-manual}"
+    name="${2:-manual}"
+    vol="$(python3 -c 'import json,os; print(json.dumps({"v":os.environ["RAILWAY_VOLUME_INSTANCE_ID"]}))')"
+    list="$(gql 'query($v:String!){volumeInstanceBackupList(volumeInstanceId:$v){id name createdAt scheduleId}}' "$vol")"
+    victims="$(printf '%s' "$list" | MAX="${RAILWAY_BACKUP_MAX:-10}" KEEP="${RAILWAY_BACKUP_KEEP_MANUAL:-3}" python3 -c '
+import json, os, sys
+rows = json.load(sys.stdin)["data"]["volumeInstanceBackupList"]
+manual = sorted((r for r in rows if not r.get("scheduleId")), key=lambda r: r["createdAt"])
+excess = len(rows) - (int(os.environ["MAX"]) - 1)          # leave room for the new backup
+removable = manual[: max(0, len(manual) - int(os.environ["KEEP"]))]
+for r in removable[: max(0, excess)]:
+    print(r["id"], r["createdAt"], r.get("name") or "-")')"
+    while read -r bid bdate bname; do
+      [ -n "$bid" ] || continue
+      gql 'mutation($v:String!,$b:String!){volumeInstanceBackupDelete(volumeInstanceId:$v,volumeInstanceBackupId:$b){workflowId}}' \
+        "$(B="$bid" python3 -c 'import json,os; print(json.dumps({"v":os.environ["RAILWAY_VOLUME_INSTANCE_ID"],"b":os.environ["B"]}))')" >/dev/null
+      echo "rotated out manual backup ${bname} (${bdate})"
+    done <<< "$victims"
+    payload="$(python3 -c 'import json,os,sys; print(json.dumps({"v":os.environ["RAILWAY_VOLUME_INSTANCE_ID"],"n":sys.argv[1]}))' "$name")"
+    for attempt in 1 2 3 4 5 6; do   # deletions finish asynchronously
+      if gql 'mutation($v:String!,$n:String){volumeInstanceBackupCreate(volumeInstanceId:$v,name:$n){workflowId}}' "$payload" >/dev/null; then
+        echo "volume backup requested: ${name}"; exit 0
+      fi
+      sleep 20
+    done
+    echo "volume backup could not be created: ${name}" >&2; exit 1
     ;;
   current-image)
     gql 'query($s:String!,$e:String!){serviceInstance(serviceId:$s,environmentId:$e){source{image}}}' "$(vars)" \
