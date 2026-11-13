@@ -65,6 +65,16 @@ RUN set -eu; \
 # separate Railway service open-system-sandbox over SSH (terminal.backend: ssh). No-op without the key.
 COPY --chmod=0755 deploy/sandbox-ssh/017-sandbox-ssh /etc/cont-init.d/017-sandbox-ssh
 
+# Move the gadget platform off port 8765, which the MCP HTTP bridge above owns (mcp.open-system.space
+# is routed to it). Both defaulted to 8765, so the gadget never bound and /api/status stayed degraded
+# with gadget_listen_failed. Runs after 016-config-repair so it only sees parseable config; reuses that
+# venv's PyYAML, so no extra layer. Idempotent and a no-op when no gadget block exists.
+COPY --chmod=0755 deploy/gadget-port/018-gadget-port /etc/cont-init.d/018-gadget-port
+COPY deploy/gadget-port/gadget_port.py /opt/gadget-port/gadget_port.py
+RUN set -eu; \
+    chmod 0755 /opt/gadget-port/gadget_port.py; \
+    /opt/config-repair/venv/bin/python -I -m py_compile /opt/gadget-port/gadget_port.py
+
 # Encrypted off-site backup service (Supabase open-system-backup-ingest), replacing the agent cron job.
 COPY deploy/offsite-backup/offsite_backup.py /opt/offsite-backup/offsite_backup.py
 COPY deploy/offsite-backup/run /etc/s6-overlay/s6-rc.d/hermes-offsite-backup/run
