@@ -64,6 +64,9 @@ jobs:
           if ssh "${opts[@]}" agent@127.0.0.1 'cat /proc/1/environ' >/dev/null 2>&1; then echo "PID 1 environment readable" >&2; exit 1; fi
           docker rm -f sbx >/dev/null
           rm -rf "$t"
+      - name: Sandbox logs on failure
+        if: failure()
+        run: docker logs sbx 2>&1 | tail -40 || true
       - name: Publish
         id: publish
         env:
