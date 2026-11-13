@@ -53,8 +53,13 @@ RUN set -eu; \
 # Boot-time repair of config.yaml files that no longer parse (Hermes otherwise runs on defaults and
 # refuses API writes over the broken file). Runs after 015-supervise-perms, before profile reconcile.
 COPY --chmod=0755 deploy/config-repair/016-config-repair /etc/cont-init.d/016-config-repair
-COPY --chmod=0755 deploy/config-repair/config_repair.py /opt/config-repair/config_repair.py
-RUN /opt/hermes/.venv/bin/python -I -c "import yaml" && /opt/hermes/.venv/bin/python -I -m py_compile /opt/config-repair/config_repair.py
+COPY deploy/config-repair/requirements.lock deploy/config-repair/config_repair.py /opt/config-repair/
+RUN set -eu; \
+    "$(readlink -f /opt/hermes/.venv/bin/python3)" -m venv /opt/config-repair/venv; \
+    /opt/config-repair/venv/bin/pip install --no-cache-dir --require-hashes --only-binary=:all: -r /opt/config-repair/requirements.lock; \
+    chmod 0755 /opt/config-repair/config_repair.py; \
+    /opt/config-repair/venv/bin/python -I -c "import yaml"; \
+    /opt/config-repair/venv/bin/python -I -m py_compile /opt/config-repair/config_repair.py
 
 # Encrypted off-site backup service (Supabase open-system-backup-ingest), replacing the agent cron job.
 COPY deploy/offsite-backup/offsite_backup.py /opt/offsite-backup/offsite_backup.py
