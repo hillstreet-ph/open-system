@@ -88,6 +88,33 @@ Fallbacks: `openai-codex` → `xai-oauth` → `openrouter` (free) → `deepseek`
 Every profile's `.env` carries `HERMES_CUSTOM_OPENAI_API_KEY` so profile gateways, cron
 and kanban workers can use the shared provider entry.
 
+## Execution sandbox
+
+Agent terminal, file and `execute_code` calls do not run inside the Hermes container. Every profile
+uses `terminal.backend: ssh` to the separate Railway service `open-system-sandbox` (image
+`hillstreet/open-system-sandbox`, built from `deploy/sandbox` by `.github/workflows/open-system-sandbox.yml`):
+
+- reached only over Railway private networking: `open-system-sandbox.railway.internal:2222`, no public domain;
+- key-only SSH as the unprivileged user `agent`, no root login, no forwarding;
+- persistent workspace `/data/home/workspace` on the sandbox volume; Python 3.12, Node 22, git, build tools;
+- no access to `/opt/data` or the Hermes secrets; only variables a skill declares (or
+  `terminal.env_passthrough` lists) are forwarded, never provider credentials.
+
+| Variable | Service | Purpose |
+|---|---|---|
+| `SANDBOX_HOST_KEY` | open-system-sandbox | sandbox SSH host key (fixed, so redeploys keep the identity) |
+| `SANDBOX_AUTHORIZED_KEYS` | open-system-sandbox | Hermes public key |
+| `SANDBOX_SSH_PRIVATE_KEY` | hermes-agent | Hermes key; `cont-init 017-sandbox-ssh` writes it to `/opt/data/.ssh/sandbox_ed25519` |
+| `SANDBOX_SSH_KNOWN_HOSTS` | hermes-agent | pinned sandbox host key (`/opt/data/.ssh/known_hosts2`) |
+| `SANDBOX_RAILWAY_SERVICE_ID` | GitHub variable | lets the sandbox workflow deploy new images |
+
+Admin actions: `sandbox` points every profile at the sandbox (the scheduled `guard` re-applies it if a
+profile drifts back to `local`); `sandbox-check` asks the agent through the API server to run
+`whoami` and checks it ran as `agent` without seeing `/opt/data`. To fall back to the container, remove
+`SANDBOX_SSH_PRIVATE_KEY` from hermes-agent and set `terminal.backend: local` in the profiles.
+Host-level work (Hermes CLI, `/opt/data`) belongs to the admin/ops workflows, not to agent chats.
+`procs` now reports the sandbox's processes, not the Hermes container's.
+
 ## Broken config.yaml
 
 When a `config.yaml` stops parsing, Hermes runs on built-in defaults (no open-connect routing, no

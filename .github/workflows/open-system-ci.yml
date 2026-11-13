@@ -33,6 +33,6 @@ jobs:
       - name: Deploy scripts
         run: |
           set -euo pipefail
-          for f in deploy/*.sh deploy/mcp-http/run deploy/offsite-backup/run deploy/config-repair/016-config-repair; do bash -n "$f"; done
+          for f in deploy/*.sh deploy/mcp-http/run deploy/offsite-backup/run deploy/config-repair/016-config-repair deploy/sandbox-ssh/017-sandbox-ssh deploy/sandbox/entrypoint.sh; do bash -n "$f"; done
           python3 -m py_compile deploy/*.py deploy/mcp-http/*.py deploy/offsite-backup/*.py deploy/config-repair/*.py
           echo "deploy layer OK"
