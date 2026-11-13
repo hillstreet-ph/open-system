@@ -2,5 +2,5 @@
 # shellcheck shell=sh
 # Repair config.yaml files that stopped parsing before any Hermes service starts
 # (see deploy/config-repair/config_repair.py). Never blocks the boot.
-/opt/hermes/.venv/bin/python -I /opt/config-repair/config_repair.py || true
+/opt/config-repair/venv/bin/python -I /opt/config-repair/config_repair.py || true
 exit 0
