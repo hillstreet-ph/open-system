@@ -39,6 +39,7 @@ on:
       - deploy/open-system-compat.Dockerfile
       - deploy/mcp-http/**
       - deploy/offsite-backup/**
+      - deploy/config-repair/**
       - .github/workflows/open-system-compat-validation.yml
 
 permissions:
@@ -181,6 +182,11 @@ jobs:
             test -f /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-offsite-backup
             test -x /etc/s6-overlay/s6-rc.d/hermes-offsite-backup/run
             if HERMES_BACKUP_TRANSFER_TOKEN= HERMES_BACKUP_ENCRYPTION_KEY= HERMES_HOME=/tmp/hermes-test /opt/hermes/.venv/bin/python -I /opt/offsite-backup/offsite_backup.py --once; then echo "offsite backup ran without secrets" >&2; exit 1; fi
+            test -x /etc/cont-init.d/016-config-repair
+            mkdir -p /tmp/cr && printf "model:\\n  default: open-connect/auto\\n  rotation_strategy: x\\n continuous_rotation: true\\n" > /tmp/cr/config.yaml
+            HERMES_HOME=/tmp/cr /opt/hermes/.venv/bin/python -I /opt/config-repair/config_repair.py
+            /opt/hermes/.venv/bin/python -I -c "import yaml; d = yaml.safe_load(open(\"/tmp/cr/config.yaml\")); assert d[\"model\"][\"default\"] == \"open-connect/auto\", d"
+            ls /tmp/cr/backups/config/config.yaml.unparseable-*
             /opt/mcp-http/bin/python -I -c "import mcp_proxy.mcp_server, mcp_proxy.proxy_server"
             if MCP_HTTP_TOKEN=short /opt/mcp-http/bin/python -I /opt/mcp-http/server.py; then echo "mcp-http started without a valid token" >&2; exit 1; fi
           '
@@ -276,7 +282,9 @@ jobs:
           import json, os, sys
           s = json.load(sys.stdin)
           tg = (s.get("gateway_platforms") or {}).get("telegram", {}).get("state")
-          ok = s.get("version") == os.environ["WANT"] and s.get("gateway_running") is True and tg in (None, "connected")
+          # gateway_state "startup_failed" with gateway_running true = config.yaml did not load (2026-11-12)
+          ok = (s.get("version") == os.environ["WANT"] and s.get("gateway_running") is True
+                and s.get("gateway_state") != "startup_failed" and tg in (None, "connected"))
           print("version=%s gateway=%s telegram=%s" % (s.get("version"), s.get("gateway_state"), tg))
           sys.exit(0 if ok else 1)'; then
               echo "healthy=true" >> "$GITHUB_OUTPUT"; exit 0

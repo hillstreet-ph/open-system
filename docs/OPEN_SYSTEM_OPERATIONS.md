@@ -74,7 +74,8 @@ in `RAILWAY_TOKEN` and picks the matching auth header automatically.
 | `MCP_HTTP_TOKEN` | Railway service variable | bearer token for `mcp.open-system.space`; created by the release workflow, never printed |
 
 Railway service variables (values live only in Railway): `API_SERVER_KEY`,
-`HERMES_DASHBOARD*` (incl. basic-auth username/password/hash/secret),
+`HERMES_DASHBOARD*` (incl. basic-auth username/password/hash/secret and
+`HERMES_DASHBOARD_SESSION_TOKEN`, the Desktop remote-gateway token),
 `HERMES_CUSTOM_OPENAI_API_KEY` (open-connect gateway key), `HERMES_BACKUP_TRANSFER_TOKEN`,
 `HERMES_BACKUP_ENCRYPTION_KEY`, `HERMES_AUTO_RESTORE=1`, `HERMES_MAX_TOKENS`, `PORT`.
 Provider keys used by individual profiles live in each profile's `.env` on the volume.
@@ -86,6 +87,17 @@ key `HERMES_CUSTOM_OPENAI_API_KEY`), model `open-connect/auto`.
 Fallbacks: `openai-codex` → `xai-oauth` → `openrouter` (free) → `deepseek`.
 Every profile's `.env` carries `HERMES_CUSTOM_OPENAI_API_KEY` so profile gateways, cron
 and kanban workers can use the shared provider entry.
+
+## Broken config.yaml
+
+When a `config.yaml` stops parsing, Hermes runs on built-in defaults (no open-connect routing, no
+MCP servers, `/api/status` shows `gateway_state: startup_failed`) and refuses every API write over
+the file. On each container start, `/etc/cont-init.d/016-config-repair`
+(`deploy/config-repair/config_repair.py`) checks the default and every profile `config.yaml`; a
+file that does not parse is copied to `<home>/backups/config/config.yaml.unparseable-<UTC>` and
+only the lines the parser rejects are removed (key names are logged, values never). To apply it,
+restart the service (Railway → `hermes-agent` → Restart). The release health gate and the ops
+probe both fail on `startup_failed`.
 
 ## Restore
 
@@ -105,5 +117,40 @@ deployment, or run the release workflow with `deploy` on an older commit of
 
 ## Connecting Hermes Desktop (macOS)
 
-Settings → Gateways → **Remote gateway**, URL `https://open-system.space`, sign in with
-the dashboard credentials, then **Test** (checks both HTTP and WebSocket).
+Settings → Gateways (Cmd+, → Gateways, or the plug icon at the end of the profile rail) →
+**Add connection** → **Remote gateway**:
+
+- Name: `Railway` (any unique name)
+- Gateway URL: `https://open-system.space`
+- Authentication: **Session token** — the value of the Railway variable
+  `HERMES_DASHBOARD_SESSION_TOKEN` (Railway → `hermes-agent` → Variables; it is a password:
+  rotating it means pasting the new value into Desktop). Browser sign-in at
+  https://open-system.space keeps using the dashboard username/password.
+
+Click **Test** (it checks both HTTP and WebSocket), then **Make primary** so new sessions,
+profiles and cron jobs land on the cloud gateway. The Mac's local runtime stays listed as
+**Local**; both stay connected.
+
+### Moving local Mac data into the cloud
+
+1. On the Mac, export each local profile you want in the cloud:
+   `hermes profile export <name>` (writes `<name>.tar.gz`; API keys are stripped).
+2. Copy it to the container (`scp <name>.tar.gz open-system:/opt/data/` after the SSH setup
+   below) and install it there as the hermes user: `hermes profile import /opt/data/<name>.tar.gz`.
+   Desktop also offers **⌘K → Export/Import profile…**.
+3. Keys are not exported: the cloud profiles read the shared provider key from their `.env`.
+   Never copy the Mac's `config.yaml`/`.env` over the cloud ones wholesale.
+
+### SSH into the Railway container
+
+`railway ssh` needs the Railway CLI logged in as a workspace member (`railway login`) and an SSH
+key registered with Railway (the CLI offers to register `~/.ssh/id_ed25519.pub` the first time).
+Project tokens cannot register keys.
+
+```bash
+railway link --project d42d3394-bffe-442b-ba37-e1d2bf55edce --service hermes-agent
+railway ssh                       # shell in the container (user root; Hermes runs as hermes)
+railway ssh config --service hermes-agent --alias open-system   # then: ssh open-system
+```
+
+Inside: `su hermes -s /bin/bash`, `HERMES_HOME=/opt/data hermes gateway migrate --multiplex --dry-run`.

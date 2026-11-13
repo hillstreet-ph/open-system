@@ -50,6 +50,12 @@ RUN set -eu; \
     chmod 0755 /etc/s6-overlay/s6-rc.d/hermes-mcp-http/run /opt/mcp-http/server.py; \
     /opt/mcp-http/bin/python -I -c "import mcp_proxy.mcp_server, mcp_proxy.proxy_server"
 
+# Boot-time repair of config.yaml files that no longer parse (Hermes otherwise runs on defaults and
+# refuses API writes over the broken file). Runs after 015-supervise-perms, before profile reconcile.
+COPY --chmod=0755 deploy/config-repair/016-config-repair /etc/cont-init.d/016-config-repair
+COPY --chmod=0755 deploy/config-repair/config_repair.py /opt/config-repair/config_repair.py
+RUN /opt/hermes/.venv/bin/python -I -c "import yaml" && /opt/hermes/.venv/bin/python -I -m py_compile /opt/config-repair/config_repair.py
+
 # Encrypted off-site backup service (Supabase open-system-backup-ingest), replacing the agent cron job.
 COPY deploy/offsite-backup/offsite_backup.py /opt/offsite-backup/offsite_backup.py
 COPY deploy/offsite-backup/run /etc/s6-overlay/s6-rc.d/hermes-offsite-backup/run
