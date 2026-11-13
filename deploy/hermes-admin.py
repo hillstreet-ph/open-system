@@ -490,6 +490,29 @@ def skills_sync(d: Dashboard) -> None:
     print(f"  install requests sent: {len(missing) - len(failed)}; failed: {failed or 'none'}; hub update HTTP {status}")
 
 
+def config_lines(d: Dashboard) -> None:
+    """Show config.yaml around a parse error (or CONFIG_LINE), secret-looking values masked."""
+    text = config_text(d)
+    line = int(os.environ.get("CONFIG_LINE") or 0)
+    if not line:
+        try:
+            yaml.safe_load(text)
+            print("config.yaml parses cleanly")
+            return
+        except yaml.YAMLError as exc:
+            mark = getattr(exc, "problem_mark", None)
+            line = (mark.line + 1) if mark else 1
+            print(f"parse error: {getattr(exc, 'problem', exc)} at line {line}")
+    lines = text.splitlines()
+    print(f"config.yaml: {len(lines)} lines")
+    for n in range(max(1, line - 15), min(len(lines), line + 10) + 1):
+        raw = lines[n - 1]
+        key, sep, val = raw.partition(":")
+        if sep and val.strip() and (SECRETISH.search(key) or len(val.strip()) > 60):
+            raw = f"{key}: <masked>"
+        print(f"{n:5d}{'>' if n == line else ' '} {raw[:160]}")
+
+
 def restart_gateway(d: Dashboard) -> None:
     status, _ = d.call("POST", "/api/gateway/restart", {})
     print(f"gateway restart requested (HTTP {status})")
@@ -556,6 +579,8 @@ def main() -> None:
         fix_default(d)
         fix_profiles(d)
         restart_gateway(d)
+    elif action == "config-lines":
+        config_lines(d)
     elif action == "skills-sync":
         skills_sync(d)
     elif action == "cron":
