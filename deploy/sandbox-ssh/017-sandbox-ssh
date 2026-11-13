@@ -1,0 +1,18 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Install the SSH identity Hermes uses to reach the execution sandbox (deploy/sandbox) from service
+# variables: SANDBOX_SSH_PRIVATE_KEY -> /opt/data/.ssh/sandbox_ed25519 (hermes, 0600) and, when set,
+# SANDBOX_SSH_KNOWN_HOSTS -> /opt/data/.ssh/known_hosts2 (pinned sandbox host key). No-op without the
+# key. Never prints key material and never blocks the boot.
+[ -n "${SANDBOX_SSH_PRIVATE_KEY:-}" ] || exit 0
+d=/opt/data/.ssh
+umask 077
+mkdir -p "$d" || exit 0
+printf '%s\n' "$SANDBOX_SSH_PRIVATE_KEY" > "$d/sandbox_ed25519.new" && mv -f "$d/sandbox_ed25519.new" "$d/sandbox_ed25519"
+if [ -n "${SANDBOX_SSH_KNOWN_HOSTS:-}" ]; then
+  printf '%s\n' "$SANDBOX_SSH_KNOWN_HOSTS" > "$d/known_hosts2.new" && mv -f "$d/known_hosts2.new" "$d/known_hosts2"
+fi
+chown -R hermes:hermes "$d" 2>/dev/null || true
+chmod 700 "$d"; chmod 600 "$d/sandbox_ed25519"
+echo "sandbox-ssh: identity installed for the execution sandbox"
+exit 0

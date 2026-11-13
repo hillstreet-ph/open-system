@@ -8,6 +8,9 @@ names, providers, URLs and booleans only.
   hermes-admin.py diagnose     model routing, fallbacks, web provider, MCP servers,
                                per-profile key presence
   hermes-admin.py inventory    plugins, toolsets, skills and MCP servers with their state
+  hermes-admin.py sandbox      run every profile's terminal/file/code calls in the execution sandbox
+                               (SSH to open-system-sandbox.railway.internal), then restart the gateway
+  hermes-admin.py sandbox-check  verify through the API server that agent commands run in the sandbox
   hermes-admin.py optimize     keep only the production MCP servers enabled (others disabled, not
                                removed), add the GitHub MCP, cap concurrent subagents at 4
   hermes-admin.py fix          restore the intended routing and settings, then restart the gateway:
@@ -543,6 +546,79 @@ def repair_config(d: Dashboard) -> bool:
     return True
 
 
+# Isolated execution sandbox (deploy/sandbox, Railway service open-system-sandbox): every profile runs
+# its terminal / file / execute_code calls there over SSH instead of inside the Hermes container, so
+# agent commands never see /opt/data or the Hermes secrets. Enforced only while the Hermes service has
+# SANDBOX_SSH_PRIVATE_KEY (written to SANDBOX_KEY_PATH by cont-init 017-sandbox-ssh).
+SANDBOX_KEY_PATH = "/opt/data/.ssh/sandbox_ed25519"
+SANDBOX_TERMINAL = {
+    "backend": "ssh",
+    "ssh_host": os.environ.get("SANDBOX_SSH_HOST", "open-system-sandbox.railway.internal"),
+    "ssh_user": "agent",
+    "ssh_port": 2222,
+    "ssh_key": SANDBOX_KEY_PATH,
+    "cwd": "/data/home/workspace",
+}
+
+
+def sandbox_terminal(d: Dashboard, *, require: bool = False) -> bool:
+    """Point the default and every named profile at the execution sandbox. Returns True on change."""
+    if "SANDBOX_SSH_PRIVATE_KEY" not in service_vars():
+        if require:
+            die("SANDBOX_SSH_PRIVATE_KEY is not set on the Hermes service; sandbox not provisioned")
+        print("sandbox: not provisioned (no SANDBOX_SSH_PRIVATE_KEY); terminal backend left as is")
+        return False
+    changed = []
+    for name in ["default"] + [n for n in profiles(d) if n != "default"]:
+        prof = None if name == "default" else name
+        status, body = d.call("GET", "/api/config/raw" + ("?" + urllib.parse.urlencode({"profile": name}) if prof else ""))
+        text = (body.get("yaml") or body.get("yaml_text")) if isinstance(body, dict) else None
+        if status >= 400 or text is None:
+            print(f"  ::warning::profile {name}: config unreadable (HTTP {status})")
+            continue
+        pcfg = yaml.safe_load(text) or {}
+        term = pcfg.get("terminal") if isinstance(pcfg.get("terminal"), dict) else {}
+        if all(term.get(k) == v for k, v in SANDBOX_TERMINAL.items()):
+            continue
+        before = term.get("backend", "local")
+        term.update(SANDBOX_TERMINAL)
+        pcfg["terminal"] = term
+        put_config(d, pcfg, prof)
+        changed.append(f"{name} ({before}->ssh)")
+    print(f"sandbox: {len(changed)} profile(s) switched {changed}" if changed else "sandbox: all profiles already on the sandbox")
+    return bool(changed)
+
+
+SANDBOX_PROMPT = (
+    "Run exactly this single terminal command and reply with ONLY its raw output, no commentary:\n"
+    "echo SANDBOX_CHECK user=$(whoami) host=$(hostname) cwd=$(pwd) hermes_home=$(test -d /opt/data && echo visible || echo absent)")
+
+
+def sandbox_check() -> None:
+    """End-to-end check through the API server: the agent's terminal must run as the sandbox user
+    and must not see the Hermes volume."""
+    env = service_vars()
+    key = env.get("API_SERVER_KEY")
+    if not key:
+        die("API_SERVER_KEY not set on the Railway service")
+    api = os.environ.get("API_URL", "https://api.open-system.space").rstrip("/")
+    body = json.dumps({"model": "hermes-agent", "stream": False,
+                       "messages": [{"role": "user", "content": SANDBOX_PROMPT}]}).encode()
+    req = urllib.request.Request(api + "/v1/chat/completions", body, method="POST", headers={
+        "Content-Type": "application/json", "Authorization": f"Bearer {key}", "User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            reply = json.load(r)
+    except urllib.error.HTTPError as err:
+        die(f"API server -> HTTP {err.code}")
+    text = (((reply.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    line = next((ln for ln in text.splitlines() if "SANDBOX_CHECK" in ln), text[:300])
+    print(line)
+    if "user=agent" not in line or "hermes_home=absent" not in line:
+        die("agent commands are NOT running in the sandbox")
+    print("sandbox check passed: agent commands run as agent in the sandbox without the Hermes volume")
+
+
 def restart_gateway(d: Dashboard) -> None:
     status, _ = d.call("POST", "/api/gateway/restart", {})
     print(f"gateway restart requested (HTTP {status})")
@@ -600,6 +676,9 @@ def main() -> None:
     if action == "procs":
         procs()
         return
+    if action == "sandbox-check":
+        sandbox_check()
+        return
     d = login()
     if action == "diagnose":
         diagnose(d)
@@ -622,6 +701,9 @@ def main() -> None:
     elif action == "optimize":
         if optimize(d):
             restart_gateway(d)
+    elif action == "sandbox":
+        if sandbox_terminal(d, require=True):
+            restart_gateway(d)
     elif action == "guard":
         # Scheduled drift guard: correct the default routing only when it drifted, and restart the
         # gateway only then, so a healthy run changes nothing.
@@ -633,6 +715,9 @@ def main() -> None:
         # whose process copies filled the 1000-pid cgroup on 2026-11-10.
         if optimize(d):
             print("::warning::MCP servers, plugins or subagent limits had drifted and were reset")
+            drifted = True
+        if sandbox_terminal(d):
+            print("::warning::terminal backend had drifted from the execution sandbox and was reset")
             drifted = True
         if drifted:
             restart_gateway(d)

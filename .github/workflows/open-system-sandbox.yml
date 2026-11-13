@@ -1,0 +1,86 @@
+# Build, test, publish and deploy the Hermes execution sandbox (deploy/sandbox): the isolated
+# Railway service where the agent's terminal / file / code-execution calls run over SSH.
+name: Open-System sandbox
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - deploy/sandbox/**
+      - .github/workflows/open-system-sandbox.yml
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the tested image to the Railway sandbox service
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-system-sandbox
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPO: hillstreet/open-system-sandbox
+
+jobs:
+  sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_SERVICE_ID: ${{ vars.SANDBOX_RAILWAY_SERVICE_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          sparse-checkout: deploy
+      - name: Build
+        run: docker build -t open-system-sandbox:test deploy/sandbox
+      - name: Test SSH login and command execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          t="$(mktemp -d)"
+          ssh-keygen -q -t ed25519 -N '' -f "$t/host"
+          ssh-keygen -q -t ed25519 -N '' -f "$t/client"
+          docker run -d --name sbx -p 127.0.0.1:2222:2222 \
+            -e SANDBOX_HOST_KEY="$(cat "$t/host")" -e SANDBOX_AUTHORIZED_KEYS="$(cat "$t/client.pub")" \
+            open-system-sandbox:test
+          for _ in $(seq 1 20); do docker logs sbx 2>&1 | grep -q 'sshd listening' && break; sleep 1; done
+          printf '[127.0.0.1]:2222 %s\n' "$(cut -d' ' -f1,2 "$t/host.pub")" > "$t/known_hosts"
+          opts=(-i "$t/client" -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$t/known_hosts")
+          out="$(ssh "${opts[@]}" agent@127.0.0.1 'echo "$(whoami) $PWD"; python3 -c "print(6*7)"; node -e "console.log(40+2)"; git --version >/dev/null && echo git-ok')"
+          echo "$out"
+          grep -q '^agent /data/home$' <<<"$out"
+          [ "$(grep -c '^42$' <<<"$out")" = 2 ]
+          grep -q git-ok <<<"$out"
+          # no root login, no password login, no secrets in the user environment
+          if ssh "${opts[@]}" root@127.0.0.1 true 2>/dev/null; then echo "root login allowed" >&2; exit 1; fi
+          if ssh "${opts[@]}" agent@127.0.0.1 'env | grep -q SANDBOX_'; then echo "sandbox variables leaked" >&2; exit 1; fi
+          if ssh "${opts[@]}" agent@127.0.0.1 'cat /proc/1/environ' >/dev/null 2>&1; then echo "PID 1 environment readable" >&2; exit 1; fi
+          docker rm -f sbx >/dev/null
+          rm -rf "$t"
+      - name: Publish
+        id: publish
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+          image="${IMAGE_REPO}:${GITHUB_SHA}"
+          docker tag open-system-sandbox:test "$image"
+          docker tag open-system-sandbox:test "${IMAGE_REPO}:latest"
+          docker push "$image"
+          docker push "${IMAGE_REPO}:latest"
+          docker logout
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "- published \`$image\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Deploy to Railway
+        if: (github.event_name == 'push' || inputs.deploy) && env.RAILWAY_SERVICE_ID != ''
+        run: bash deploy/railway.sh image "docker.io/${{ steps.publish.outputs.image }}"

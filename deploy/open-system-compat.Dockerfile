@@ -61,6 +61,10 @@ RUN set -eu; \
     /opt/config-repair/venv/bin/python -I -c "import yaml"; \
     /opt/config-repair/venv/bin/python -I -m py_compile /opt/config-repair/config_repair.py
 
+# SSH identity for the execution sandbox (deploy/sandbox): agent terminal/file/code calls run in the
+# separate Railway service open-system-sandbox over SSH (terminal.backend: ssh). No-op without the key.
+COPY --chmod=0755 deploy/sandbox-ssh/017-sandbox-ssh /etc/cont-init.d/017-sandbox-ssh
+
 # Encrypted off-site backup service (Supabase open-system-backup-ingest), replacing the agent cron job.
 COPY deploy/offsite-backup/offsite_backup.py /opt/offsite-backup/offsite_backup.py
 COPY deploy/offsite-backup/run /etc/s6-overlay/s6-rc.d/hermes-offsite-backup/run
