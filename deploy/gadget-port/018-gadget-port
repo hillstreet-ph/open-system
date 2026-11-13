@@ -1,0 +1,7 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Move the gadget platform off port 8765, which the MCP HTTP bridge owns (mcp.open-system.space).
+# Runs after 016-config-repair so it only ever sees parseable config. Never blocks the boot.
+# Reuses the config-repair venv: it already ships PyYAML, so no extra image layer is needed.
+/opt/config-repair/venv/bin/python -I /opt/gadget-port/gadget_port.py || true
+exit 0
