@@ -513,6 +513,36 @@ def config_lines(d: Dashboard) -> None:
         print(f"{n:5d}{'>' if n == line else ' '} {raw[:160]}")
 
 
+def repair_config(d: Dashboard) -> bool:
+    """Make the default config.yaml parse again by dropping the lines the parser rejects (stray,
+    mis-indented `key: value` lines left by hand or agent edits). Hermes runs on DEFAULT settings
+    while config.yaml does not parse (model routing, MCP servers, plugins all lost), so any repair
+    beats none; each dropped line is printed (values masked) and Hermes keeps its own copy of the
+    broken file under backups/config/. Returns True when the file was changed."""
+    text = config_text(d)
+    lines, dropped = text.splitlines(), []
+    for _ in range(25):
+        try:
+            yaml.safe_load("\n".join(lines) + "\n")
+            break
+        except yaml.YAMLError as exc:
+            mark = getattr(exc, "problem_mark", None)
+            if mark is None or not (0 <= mark.line < len(lines)):
+                die(f"config.yaml does not parse and cannot be repaired automatically: {exc}")
+            bad = lines.pop(mark.line)
+            key = bad.split(":", 1)[0]
+            dropped.append(f"line {mark.line + 1}: {key}{': <value>' if ':' in bad else ''}")
+    else:
+        die("config.yaml still does not parse after 25 line removals; not writing")
+    if not dropped:
+        return False
+    status, _ = d.call("PUT", "/api/config/raw", {"yaml_text": "\n".join(lines) + "\n", "profile": None})
+    if status >= 400:
+        die(f"PUT repaired config -> HTTP {status}")
+    print(f"::warning::config.yaml did not parse; removed {len(dropped)} line(s): {dropped}")
+    return True
+
+
 def restart_gateway(d: Dashboard) -> None:
     status, _ = d.call("POST", "/api/gateway/restart", {})
     print(f"gateway restart requested (HTTP {status})")
@@ -579,6 +609,10 @@ def main() -> None:
         fix_default(d)
         fix_profiles(d)
         restart_gateway(d)
+    elif action == "config-repair":
+        if repair_config(d):
+            fix_default(d)
+            restart_gateway(d)
     elif action == "config-lines":
         config_lines(d)
     elif action == "skills-sync":
@@ -591,7 +625,8 @@ def main() -> None:
     elif action == "guard":
         # Scheduled drift guard: correct the default routing only when it drifted, and restart the
         # gateway only then, so a healthy run changes nothing.
-        drifted = fix_default(d)
+        drifted = repair_config(d)
+        drifted = fix_default(d) or drifted
         if drifted:
             print("::warning::default model routing had drifted and was corrected")
         # Re-apply the MCP/plugin/concurrency limits: agent sessions have re-enabled snyk/meshy/rea,
