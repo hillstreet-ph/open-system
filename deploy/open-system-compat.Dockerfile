@@ -1,6 +1,6 @@
-# hermes-version: v0.23.1  (base = nousresearch/hermes-agent:v0.22.6, digest-pinned below)
+# hermes-version: v0.23.2  (base = nousresearch/hermes-agent:v0.22.6, digest-pinned below)
 FROM hillstreet/open-system@sha256:7d7620db45e9dce4c2a25a1f3bbd864531d9320391f4902090dbaf690e08fc25 AS legacy
-FROM nousresearch/hermes-agent@sha256:276d44685c65c0cb2a25f190b63c65c8906f9dc76486fb1c05ae71b5826bda08
+FROM nousresearch/hermes-agent@sha256:d6746a084e9341baada483e3d6210444d3c1aeb7c130f0915150065fb2851459
 
 # Retain the existing Open-System tunnel while upgrading Hermes itself.
 COPY --from=legacy /usr/local/bin/tunnel-client /usr/local/bin/tunnel-client
