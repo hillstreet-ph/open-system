@@ -1,6 +1,6 @@
-# hermes-version: v0.23.1  (base = nousresearch/hermes-agent:v0.22.6, digest-pinned below)
+# hermes-version: v0.23.2  (base = nousresearch/hermes-agent:v0.22.6, digest-pinned below)
 FROM hillstreet/open-system@sha256:7d7620db45e9dce4c2a25a1f3bbd864531d9320391f4902090dbaf690e08fc25 AS legacy
-FROM nousresearch/hermes-agent@sha256:276d44685c65c0cb2a25f190b63c65c8906f9dc76486fb1c05ae71b5826bda08
+FROM nousresearch/hermes-agent@sha256:d6746a084e9341baada483e3d6210444d3c1aeb7c130f0915150065fb2851459
 
 # Retain the existing Open-System tunnel while upgrading Hermes itself.
 COPY --from=legacy /usr/local/bin/tunnel-client /usr/local/bin/tunnel-client
@@ -49,6 +49,31 @@ RUN set -eu; \
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-mcp-http; \
     chmod 0755 /etc/s6-overlay/s6-rc.d/hermes-mcp-http/run /opt/mcp-http/server.py; \
     /opt/mcp-http/bin/python -I -c "import mcp_proxy.mcp_server, mcp_proxy.proxy_server"
+
+# Boot-time repair of config.yaml files that no longer parse (Hermes otherwise runs on defaults and
+# refuses API writes over the broken file). Runs after 015-supervise-perms, before profile reconcile.
+COPY --chmod=0755 deploy/config-repair/016-config-repair /etc/cont-init.d/016-config-repair
+COPY deploy/config-repair/requirements.lock deploy/config-repair/config_repair.py /opt/config-repair/
+RUN set -eu; \
+    "$(readlink -f /opt/hermes/.venv/bin/python3)" -m venv /opt/config-repair/venv; \
+    /opt/config-repair/venv/bin/pip install --no-cache-dir --require-hashes --only-binary=:all: -r /opt/config-repair/requirements.lock; \
+    chmod 0755 /opt/config-repair/config_repair.py; \
+    /opt/config-repair/venv/bin/python -I -c "import yaml"; \
+    /opt/config-repair/venv/bin/python -I -m py_compile /opt/config-repair/config_repair.py
+
+# SSH identity for the execution sandbox (deploy/sandbox): agent terminal/file/code calls run in the
+# separate Railway service open-system-sandbox over SSH (terminal.backend: ssh). No-op without the key.
+COPY --chmod=0755 deploy/sandbox-ssh/017-sandbox-ssh /etc/cont-init.d/017-sandbox-ssh
+
+# Move the gadget platform off port 8765, which the MCP HTTP bridge above owns (mcp.open-system.space
+# is routed to it). Both defaulted to 8765, so the gadget never bound and /api/status stayed degraded
+# with gadget_listen_failed. Runs after 016-config-repair so it only sees parseable config; reuses that
+# venv's PyYAML, so no extra layer. Idempotent and a no-op when no gadget block exists.
+COPY --chmod=0755 deploy/gadget-port/018-gadget-port /etc/cont-init.d/018-gadget-port
+COPY deploy/gadget-port/gadget_port.py /opt/gadget-port/gadget_port.py
+RUN set -eu; \
+    chmod 0755 /opt/gadget-port/gadget_port.py; \
+    /opt/config-repair/venv/bin/python -I -m py_compile /opt/gadget-port/gadget_port.py
 
 # Encrypted off-site backup service (Supabase open-system-backup-ingest), replacing the agent cron job.
 COPY deploy/offsite-backup/offsite_backup.py /opt/offsite-backup/offsite_backup.py

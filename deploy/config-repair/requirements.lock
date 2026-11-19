@@ -1,0 +1,5 @@
+# Separate venv for the boot-time config repair: the Hermes venv gets its dependencies at first
+# start (pm), so PyYAML is not importable there at build time or in cont-init.
+pyyaml==6.0.3 \
+    --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5 \
+    --hash=sha256:501a031947e3a9025ed4405a168e6ef5ae3126c59f90ce0cd6f2bfc477be31b7

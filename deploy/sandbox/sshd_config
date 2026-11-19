@@ -1,0 +1,29 @@
+# Hermes execution sandbox: key-only, one user, no forwarding.
+Port 2222
+ListenAddress 0.0.0.0
+ListenAddress ::
+HostKey /etc/ssh/ssh_host_ed25519_key
+AuthorizedKeysFile /etc/ssh/authorized_keys/%u
+AllowUsers agent
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+UsePAM no
+AllowTcpForwarding no
+AllowAgentForwarding no
+AllowStreamLocalForwarding no
+GatewayPorts no
+PermitTunnel no
+X11Forwarding no
+PermitUserEnvironment no
+# Hermes forwards only the variables a skill declares or terminal.env_passthrough lists (never
+# provider credentials), through SendEnv.
+AcceptEnv LANG LC_* *_TOKEN *_API_KEY *_URL GITHUB_* GH_* NPM_* PIP_*
+ClientAliveInterval 60
+ClientAliveCountMax 5
+MaxStartups 20:30:60
+MaxSessions 32
+LogLevel INFO
+Subsystem sftp internal-sftp
+PidFile /run/sshd.pid

@@ -54,7 +54,8 @@ jobs:
           s = json.load(sys.stdin)
           tg = (s.get("gateway_platforms") or {}).get("telegram", {}).get("state")
           print("version=%s gateway=%s telegram=%s" % (s.get("version"), s.get("gateway_state"), tg))
-          sys.exit(0 if s.get("gateway_running") is True and tg in (None, "connected") else 1)' || return 1
+          ok = s.get("gateway_running") is True and s.get("gateway_state") != "startup_failed" and tg in (None, "connected")
+          sys.exit(0 if ok else 1)' || return 1
             # The dashboard sign-in needs a registered auth provider. When the container runs out of
             # threads/processes, provider registration fails and the login page shows "Sign-in
             # unavailable" while /api/status still looks healthy (2026-11-10 incident).
